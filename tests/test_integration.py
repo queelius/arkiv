@@ -24,7 +24,7 @@ class TestEndToEnd:
 
         bookmarks = tmp_path / "bookmarks.jsonl"
         bookmarks.write_text(
-            '{"mimetype": "application/json", "url": "https://arxiv.org/abs/2301.00001", "metadata": {"annotation": "Great paper", "tags": ["math"]}}\n'
+            '{"mimetype": "application/json", "uri": "https://arxiv.org/abs/2301.00001", "metadata": {"annotation": "Great paper", "tags": ["math"]}}\n'
         )
 
         # 2. Create manifest

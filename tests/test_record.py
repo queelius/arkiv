@@ -9,13 +9,13 @@ class TestRecord:
     def test_full_record(self):
         r = Record(
             mimetype="text/plain",
-            url="https://example.com",
+            uri="https://example.com",
             content="hello",
             timestamp="2024-01-15T10:00:00Z",
             metadata={"role": "user"},
         )
         assert r.mimetype == "text/plain"
-        assert r.url == "https://example.com"
+        assert r.uri == "https://example.com"
         assert r.content == "hello"
         assert r.timestamp == "2024-01-15T10:00:00Z"
         assert r.metadata == {"role": "user"}
@@ -23,7 +23,7 @@ class TestRecord:
     def test_empty_record(self):
         r = Record()
         assert r.mimetype is None
-        assert r.url is None
+        assert r.uri is None
         assert r.content is None
         assert r.timestamp is None
         assert r.metadata is None
@@ -41,14 +41,14 @@ class TestRecord:
         r = Record(content="hello", mimetype="text/plain")
         d = r.to_dict()
         assert d == {"mimetype": "text/plain", "content": "hello"}
-        assert "url" not in d
+        assert "uri" not in d
         assert "metadata" not in d
 
     def test_to_dict_full(self):
         r = Record(
             mimetype="text/plain",
             content="hello",
-            url="file://test.txt",
+            uri="file://test.txt",
             timestamp="2024-01-15",
             metadata={"key": "val"},
         )
@@ -71,7 +71,7 @@ class TestParseRecord:
         data = {
             "mimetype": "text/plain",
             "content": "hello",
-            "url": "https://example.com",
+            "uri": "https://example.com",
             "timestamp": "2024-01-15",
             "metadata": {"role": "user"},
         }

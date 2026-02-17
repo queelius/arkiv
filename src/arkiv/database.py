@@ -25,7 +25,7 @@ class Database:
                 id INTEGER PRIMARY KEY,
                 collection TEXT,
                 mimetype TEXT,
-                url TEXT,
+                uri TEXT,
                 content TEXT,
                 timestamp TEXT,
                 metadata JSON
@@ -59,11 +59,11 @@ class Database:
         count = 0
         for record in parse_jsonl(path):
             self.conn.execute(
-                "INSERT INTO records (collection, mimetype, url, content, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO records (collection, mimetype, uri, content, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     collection,
                     record.mimetype,
-                    record.url,
+                    record.uri,
                     record.content,
                     record.timestamp,
                     json.dumps(record.metadata) if record.metadata else None,
@@ -158,12 +158,12 @@ class Database:
             count = 0
             with open(jsonl_path, "w", encoding="utf-8") as f:
                 for rec_row in self.conn.execute(
-                    "SELECT mimetype, url, content, timestamp, metadata FROM records WHERE collection = ? ORDER BY id",
+                    "SELECT mimetype, uri, content, timestamp, metadata FROM records WHERE collection = ? ORDER BY id",
                     (coll_name,),
                 ):
                     record = Record(
                         mimetype=rec_row[0],
-                        url=rec_row[1],
+                        uri=rec_row[1],
                         content=rec_row[2],
                         timestamp=rec_row[3],
                         metadata=json.loads(rec_row[4])

@@ -26,7 +26,7 @@ class TestImport:
     def test_import_preserves_fields(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text(
-            '{"mimetype": "text/plain", "url": "https://example.com", "content": "hello", "timestamp": "2024-01-15", "metadata": {"key": "val"}}\n'
+            '{"mimetype": "text/plain", "uri": "https://example.com", "content": "hello", "timestamp": "2024-01-15", "metadata": {"key": "val"}}\n'
         )
         db_path = tmp_path / "test.db"
         db = Database(db_path)
@@ -35,7 +35,7 @@ class TestImport:
 
         conn = sqlite3.connect(db_path)
         row = conn.execute(
-            "SELECT mimetype, url, content, timestamp, metadata FROM records"
+            "SELECT mimetype, uri, content, timestamp, metadata FROM records"
         ).fetchone()
         assert row[0] == "text/plain"
         assert row[1] == "https://example.com"

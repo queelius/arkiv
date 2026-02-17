@@ -61,7 +61,7 @@ class TestExport:
         """Import JSONL -> SQLite -> Export JSONL. Content should be identical."""
         original = tmp_path / "original.jsonl"
         original.write_text(
-            '{"mimetype": "text/plain", "url": "https://example.com", "content": "hello", "timestamp": "2024-01-15", "metadata": {"role": "user", "id": 42}}\n'
+            '{"mimetype": "text/plain", "uri": "https://example.com", "content": "hello", "timestamp": "2024-01-15", "metadata": {"role": "user", "id": 42}}\n'
         )
 
         db = Database(tmp_path / "test.db")
@@ -73,7 +73,7 @@ class TestExport:
         exported_line = (out / "test.jsonl").read_text().strip()
         exported = json.loads(exported_line)
         assert exported["mimetype"] == "text/plain"
-        assert exported["url"] == "https://example.com"
+        assert exported["uri"] == "https://example.com"
         assert exported["content"] == "hello"
         assert exported["timestamp"] == "2024-01-15"
         assert exported["metadata"]["role"] == "user"

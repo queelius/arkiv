@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Union
 
 
-KNOWN_FIELDS = {"mimetype", "url", "content", "timestamp", "metadata"}
+KNOWN_FIELDS = {"mimetype", "uri", "content", "timestamp", "metadata"}
 
 
 @dataclass
@@ -17,7 +17,7 @@ class Record:
     """
 
     mimetype: Optional[str] = None
-    url: Optional[str] = None
+    uri: Optional[str] = None
     content: Optional[str] = None
     timestamp: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -27,8 +27,8 @@ class Record:
         d = {}
         if self.mimetype is not None:
             d["mimetype"] = self.mimetype
-        if self.url is not None:
-            d["url"] = self.url
+        if self.uri is not None:
+            d["uri"] = self.uri
         if self.content is not None:
             d["content"] = self.content
         if self.timestamp is not None:
@@ -45,7 +45,7 @@ class Record:
 def parse_record(data: Dict[str, Any]) -> Record:
     """Parse a dict into a Record.
 
-    Known fields (mimetype, url, content, timestamp, metadata) are
+    Known fields (mimetype, uri, content, timestamp, metadata) are
     extracted. Unknown fields are merged into metadata.
     """
     metadata = data.get("metadata")
@@ -63,7 +63,7 @@ def parse_record(data: Dict[str, Any]) -> Record:
 
     return Record(
         mimetype=data.get("mimetype"),
-        url=data.get("url"),
+        uri=data.get("uri"),
         content=data.get("content"),
         timestamp=data.get("timestamp"),
         metadata=metadata if metadata else None,
