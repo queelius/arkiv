@@ -415,17 +415,46 @@ Personal data is naturally document-shaped. A conversation message, a photograph
 
 ---
 
+## Relationship to ECHO
+
+ECHO is a philosophy and compliance standard for durable personal archives. Its core requirements: self-describing (README), durable formats, graceful degradation, local-first.
+
+arkiv is independent of ECHO but naturally ECHO-compliant:
+
+- **README.md** satisfies ECHO's self-description requirement
+- **JSONL** is a durable format (plain text, human-readable, no special tools needed)
+- **SQLite** is a durable format (Library of Congress recommended archival format)
+- **Two degradation layers** built in: SQLite for rich queries, JSONL for `cat`/`grep`/text editors
+
+arkiv does not claim to be ECHO's recommended format. ECHO is format-agnostic by design. But an arkiv archive with a README is automatically ECHO-compliant.
+
+### Toolkit Output Convention
+
+Source toolkits (ctk, btk, ebk, ptk, mtk) can export as arkiv archives with ECHO compliance:
+
+```
+ctk-export/
+├── README.md              # ECHO compliant (self-describing)
+├── manifest.json          # arkiv manifest (schema discovery)
+├── conversations.jsonl    # arkiv universal format (human-readable, durable)
+└── conversations.db       # arkiv SQLite (queryable, durable)
+```
+
+This gives each export two degradation layers and full self-description, with no extra effort from the toolkit.
+
+---
+
 ## Relationship to Other Projects
 
 ### Input Sources (Toolkit Ecosystem)
 
 Source toolkits export data in arkiv's universal record format:
 
-- **ctk** -- Conversations (ChatGPT, Claude, etc.) → JSONL
-- **mtk** -- Email, music → JSONL
-- **btk** -- Bookmarks → JSONL
-- **ptk** -- Photos → JSONL
-- **ebk** -- Ebooks, reading notes → JSONL
+- **ctk** -- Conversations (ChatGPT, Claude, etc.) → JSONL + SQLite
+- **mtk** -- Email, music → JSONL + SQLite
+- **btk** -- Bookmarks → JSONL + SQLite
+- **ptk** -- Photos → JSONL + SQLite
+- **ebk** -- Ebooks, reading notes → JSONL + SQLite
 
 ### Applications
 
@@ -435,7 +464,7 @@ Source toolkits export data in arkiv's universal record format:
 
 ### Compliance
 
-- **longecho** -- ECHO compliance validator. arkiv's format may align with or extend ECHO for archival compliance.
+- **longecho** -- ECHO compliance validator. arkiv archives are naturally ECHO-compliant.
 
 ---
 
@@ -455,4 +484,3 @@ Source toolkits export data in arkiv's universal record format:
 - **Embedding column** -- Optional vector embeddings in the SQLite for semantic search (if needed)
 - **Watch mode** -- Monitor JSONL files for changes and auto-update SQLite
 - **Streaming import** -- Handle very large JSONL files without loading into memory
-- **ECHO compliance** -- Investigate alignment with longecho's ECHO format for archival guarantees
