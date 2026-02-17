@@ -141,5 +141,72 @@ class Database:
                 result[row[0]] = self.get_schema(row[0])
             return result
 
+    def export(self, output_dir: Union[str, Path]) -> None:
+        """Export database to JSONL files + manifest."""
+        from .manifest import Manifest, Collection, save_manifest
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        collections = []
+        for row in self.conn.execute(
+            "SELECT DISTINCT collection FROM records"
+        ):
+            coll_name = row[0]
+            jsonl_path = output_dir / f"{coll_name}.jsonl"
+
+            count = 0
+            with open(jsonl_path, "w", encoding="utf-8") as f:
+                for rec_row in self.conn.execute(
+                    "SELECT mimetype, url, content, timestamp, metadata FROM records WHERE collection = ? ORDER BY id",
+                    (coll_name,),
+                ):
+                    record = Record(
+                        mimetype=rec_row[0],
+                        url=rec_row[1],
+                        content=rec_row[2],
+                        timestamp=rec_row[3],
+                        metadata=json.loads(rec_row[4])
+                        if rec_row[4]
+                        else None,
+                    )
+                    f.write(record.to_json() + "\n")
+                    count += 1
+
+            # Get schema for this collection
+            schema_data = self.get_schema(coll_name)
+            collections.append(
+                Collection(
+                    file=f"{coll_name}.jsonl",
+                    record_count=count,
+                    schema=schema_data.get("metadata_keys")
+                    if schema_data
+                    else None,
+                )
+            )
+
+        manifest = Manifest(collections=collections)
+        save_manifest(manifest, output_dir / "manifest.json")
+
+    def import_manifest(self, manifest_path: Union[str, Path]) -> int:
+        """Import all collections described in a manifest.json.
+
+        Returns total records imported.
+        """
+        from .manifest import load_manifest
+
+        manifest_path = Path(manifest_path)
+        manifest = load_manifest(manifest_path)
+        base_dir = manifest_path.parent
+
+        total = 0
+        for coll in manifest.collections:
+            jsonl_path = base_dir / coll.file
+            if jsonl_path.exists():
+                count = self.import_jsonl(jsonl_path, collection=jsonl_path.stem)
+                total += count
+
+        return total
+
     def close(self) -> None:
         self.conn.close()
