@@ -446,16 +446,24 @@ This gives each export two degradation layers and full self-description, with no
 
 arkiv archives contain personal data that may require access control. **pagevault** provides encrypted, password-protected viewing of static content with an embedded self-contained viewer.
 
-An arkiv archive can be wrapped with pagevault to produce an encrypted, ECHO-compliant package:
+For the raw data, standard encryption over a compressed archive is the most ECHO-compliant approach:
 
-- The archive is still a static file (durable, local-first)
-- The viewer is embedded (self-contained, no external dependencies)
-- User management controls who can access the data
-- Encryption does not break ECHO's durability guarantees -- the viewer travels with the data
+```bash
+# Compress
+tar czf archive.tar.gz manifest.json *.jsonl media/
 
-This is especially important for persona data (conversations, voice, memories) where the owner may want the archive accessible to family or designated people but not the public.
+# Encrypt with GPG (universally available, battle-tested)
+gpg --symmetric --cipher-algo AES256 archive.tar.gz
 
-**Tradeoff:** pagevault requires HTML + CSS + JavaScript (a browser) to decrypt and view content. This is less ECHO-compliant than plain JSONL, which only needs a text editor. Encryption and graceful degradation are fundamentally in tension -- you can't read encrypted data with `cat`. The pragmatic choice: privacy when needed, plaintext when possible.
+# Or age (modern, simpler)
+age -p archive.tar.gz > archive.tar.gz.age
+```
+
+This preserves the full degradation chain: decrypt → decompress → plaintext JSONL and SQLite. The encryption tool is separate from the data, widely available, and open-source.
+
+For a *browsable* layer with authentication (e.g., sharing with family via a browser), **pagevault** provides encrypted viewing with an embedded self-contained viewer. Tradeoff: pagevault requires HTML + CSS + JavaScript, which is less ECHO-compliant than plaintext. But it's useful when you want access control without requiring recipients to use GPG.
+
+The pragmatic choice: standard encryption (GPG/age) for the data archive, pagevault for the browsable interface when needed.
 
 ---
 
