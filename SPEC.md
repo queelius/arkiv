@@ -34,7 +34,7 @@ Each line in a JSONL file is one record. A record is a JSON object with these co
 | Field | Type | Description |
 |-------|------|-------------|
 | `mimetype` | string | Standard MIME type (`text/plain`, `audio/wav`, `image/jpeg`, etc.) |
-| `url` | string | URI reference (`file://`, `http://`, `s3://`, `data:`, etc.) |
+| `uri` | string | URI reference (`file://`, `http://`, `s3://`, `data:`, etc.) |
 | `content` | string | Inline content (text for text types, base64 for binary) |
 | `timestamp` | string | ISO 8601 datetime |
 | `metadata` | object | Freeform JSON -- everything else |
@@ -43,38 +43,38 @@ Each line in a JSONL file is one record. A record is a JSON object with these co
 
 ### Invariant: One record = one resource = one mimetype
 
-The `mimetype` field describes the resource. If both `content` and `url` are present, they refer to the same resource -- `content` is the resource inlined, `url` is where it lives. Derived representations (e.g., a transcript of an audio file) belong in `metadata`, not as a second mimetype.
+The `mimetype` field describes the resource. If both `content` and `uri` are present, they refer to the same resource -- `content` is the resource inlined, `uri` is where it lives. Derived representations (e.g., a transcript of an audio file) belong in `metadata`, not as a second mimetype.
 
 ### Examples
 
 **Text (conversation message):**
 ```jsonl
-{"mimetype": "text/plain", "url": "https://chatgpt.com/c/abc123", "content": "I think the key insight is that category theory gives you a language for talking about structure without getting lost in details.", "timestamp": "2023-05-14T10:30:00Z", "metadata": {"conversation_id": "abc123", "role": "user", "source": "chatgpt"}}
+{"mimetype": "text/plain", "uri": "https://chatgpt.com/c/abc123", "content": "I think the key insight is that category theory gives you a language for talking about structure without getting lost in details.", "timestamp": "2023-05-14T10:30:00Z", "metadata": {"conversation_id": "abc123", "role": "user", "source": "chatgpt"}}
 ```
 
 **Text (blog post):**
 ```jsonl
-{"mimetype": "text/markdown", "url": "https://myblog.com/on-durability", "content": "# Why I Care About Durability\n\nWhen I think about what matters...", "timestamp": "2019-03-22", "metadata": {"title": "On Durability", "tags": ["philosophy", "archiving"]}}
+{"mimetype": "text/markdown", "uri": "https://myblog.com/on-durability", "content": "# Why I Care About Durability\n\nWhen I think about what matters...", "timestamp": "2019-03-22", "metadata": {"title": "On Durability", "tags": ["philosophy", "archiving"]}}
 ```
 
 **Audio (with transcript in metadata):**
 ```jsonl
-{"mimetype": "audio/wav", "url": "file://media/podcast-001.wav", "timestamp": "2024-01-15", "metadata": {"transcript": "Welcome to today's discussion about formal methods...", "duration": 45.2, "context": "podcast interview"}}
+{"mimetype": "audio/wav", "uri": "file://media/podcast-001.wav", "timestamp": "2024-01-15", "metadata": {"transcript": "Welcome to today's discussion about formal methods...", "duration": 45.2, "context": "podcast interview"}}
 ```
 
 **Image:**
 ```jsonl
-{"mimetype": "image/jpeg", "url": "file://media/conference-talk.jpg", "timestamp": "2024-01-15", "metadata": {"caption": "Giving my talk on category theory at MIT", "location": "MIT", "people": ["self"]}}
+{"mimetype": "image/jpeg", "uri": "file://media/conference-talk.jpg", "timestamp": "2024-01-15", "metadata": {"caption": "Giving my talk on category theory at MIT", "location": "MIT", "people": ["self"]}}
 ```
 
 **Video (remote URL):**
 ```jsonl
-{"mimetype": "video/mp4", "url": "https://youtube.com/watch?v=abc123", "timestamp": "2023-06-10", "metadata": {"title": "My conference talk on formal methods", "transcript": "Today I want to talk about..."}}
+{"mimetype": "video/mp4", "uri": "https://youtube.com/watch?v=abc123", "timestamp": "2023-06-10", "metadata": {"title": "My conference talk on formal methods", "transcript": "Today I want to talk about..."}}
 ```
 
 **Structured data (bookmark):**
 ```jsonl
-{"mimetype": "application/json", "url": "https://arxiv.org/abs/2301.00001", "timestamp": "2024-01-15", "metadata": {"annotation": "Great paper on type-theoretic approaches to databases", "tags": ["math", "databases"]}}
+{"mimetype": "application/json", "uri": "https://arxiv.org/abs/2301.00001", "timestamp": "2024-01-15", "metadata": {"annotation": "Great paper on type-theoretic approaches to databases", "tags": ["math", "databases"]}}
 ```
 
 **Bare metadata (a fact about the person):**
@@ -211,7 +211,7 @@ CREATE TABLE records (
     id INTEGER PRIMARY KEY,
     collection TEXT,        -- which JSONL file this came from
     mimetype TEXT,
-    url TEXT,
+    uri TEXT,
     content TEXT,
     timestamp TEXT,
     metadata JSON
@@ -251,7 +251,7 @@ WHERE collection = 'conversations'
 GROUP BY source;
 
 -- Find all audio with transcripts
-SELECT url, metadata->>'transcript' AS transcript, metadata->>'duration' AS duration
+SELECT uri, metadata->>'transcript' AS transcript, metadata->>'duration' AS duration
 FROM records
 WHERE mimetype LIKE 'audio/%'
   AND metadata->>'transcript' IS NOT NULL;
@@ -401,7 +401,7 @@ The JSONL files and manifest are the source of truth. The SQLite file is derived
 - New content types get MIME types automatically
 - More durable than any custom enum we'd define
 
-### Why URIs for `url`?
+### Why `uri`?
 
 - `file://` for local files
 - `http://`/`https://` for web resources

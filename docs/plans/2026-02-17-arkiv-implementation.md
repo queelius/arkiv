@@ -126,13 +126,13 @@ class TestRecord:
     def test_full_record(self):
         r = Record(
             mimetype="text/plain",
-            url="https://example.com",
+            uri="https://example.com",
             content="hello",
             timestamp="2024-01-15T10:00:00Z",
             metadata={"role": "user"},
         )
         assert r.mimetype == "text/plain"
-        assert r.url == "https://example.com"
+        assert r.uri == "https://example.com"
         assert r.content == "hello"
         assert r.timestamp == "2024-01-15T10:00:00Z"
         assert r.metadata == {"role": "user"}
@@ -140,7 +140,7 @@ class TestRecord:
     def test_empty_record(self):
         r = Record()
         assert r.mimetype is None
-        assert r.url is None
+        assert r.uri is None
         assert r.content is None
         assert r.timestamp is None
         assert r.metadata is None
@@ -158,14 +158,14 @@ class TestRecord:
         r = Record(content="hello", mimetype="text/plain")
         d = r.to_dict()
         assert d == {"mimetype": "text/plain", "content": "hello"}
-        assert "url" not in d
+        assert "uri" not in d
         assert "metadata" not in d
 
     def test_to_dict_full(self):
         r = Record(
             mimetype="text/plain",
             content="hello",
-            url="file://test.txt",
+            uri="file://test.txt",
             timestamp="2024-01-15",
             metadata={"key": "val"},
         )
@@ -188,7 +188,7 @@ class TestParseRecord:
         data = {
             "mimetype": "text/plain",
             "content": "hello",
-            "url": "https://example.com",
+            "uri": "https://example.com",
             "timestamp": "2024-01-15",
             "metadata": {"role": "user"},
         }
@@ -256,7 +256,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Union
 
 
-KNOWN_FIELDS = {"mimetype", "url", "content", "timestamp", "metadata"}
+KNOWN_FIELDS = {"mimetype", "uri", "content", "timestamp", "metadata"}
 
 
 @dataclass
@@ -267,7 +267,7 @@ class Record:
     """
 
     mimetype: Optional[str] = None
-    url: Optional[str] = None
+    uri: Optional[str] = None
     content: Optional[str] = None
     timestamp: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -277,8 +277,8 @@ class Record:
         d = {}
         if self.mimetype is not None:
             d["mimetype"] = self.mimetype
-        if self.url is not None:
-            d["url"] = self.url
+        if self.uri is not None:
+            d["uri"] = self.uri
         if self.content is not None:
             d["content"] = self.content
         if self.timestamp is not None:
@@ -295,7 +295,7 @@ class Record:
 def parse_record(data: Dict[str, Any]) -> Record:
     """Parse a dict into a Record.
 
-    Known fields (mimetype, url, content, timestamp, metadata) are
+    Known fields (mimetype, uri, content, timestamp, metadata) are
     extracted. Unknown fields are merged into metadata.
     """
     metadata = data.get("metadata")
@@ -313,7 +313,7 @@ def parse_record(data: Dict[str, Any]) -> Record:
 
     return Record(
         mimetype=data.get("mimetype"),
-        url=data.get("url"),
+        uri=data.get("uri"),
         content=data.get("content"),
         timestamp=data.get("timestamp"),
         metadata=metadata if metadata else None,
@@ -761,7 +761,7 @@ class TestImport:
     def test_import_preserves_fields(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text(
-            '{"mimetype": "text/plain", "url": "https://example.com", "content": "hello", "timestamp": "2024-01-15", "metadata": {"key": "val"}}\n'
+            '{"mimetype": "text/plain", "uri": "https://example.com", "content": "hello", "timestamp": "2024-01-15", "metadata": {"key": "val"}}\n'
         )
         db_path = tmp_path / "test.db"
         db = Database(db_path)
@@ -769,7 +769,7 @@ class TestImport:
         db.close()
 
         conn = sqlite3.connect(db_path)
-        row = conn.execute("SELECT mimetype, url, content, timestamp, metadata FROM records").fetchone()
+        row = conn.execute("SELECT mimetype, uri, content, timestamp, metadata FROM records").fetchone()
         assert row[0] == "text/plain"
         assert row[1] == "https://example.com"
         assert row[2] == "hello"
@@ -911,7 +911,7 @@ class Database:
                 id INTEGER PRIMARY KEY,
                 collection TEXT,
                 mimetype TEXT,
-                url TEXT,
+                uri TEXT,
                 content TEXT,
                 timestamp TEXT,
                 metadata JSON
@@ -944,11 +944,11 @@ class Database:
         count = 0
         for record in parse_jsonl(path):
             self.conn.execute(
-                "INSERT INTO records (collection, mimetype, url, content, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO records (collection, mimetype, uri, content, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     collection,
                     record.mimetype,
-                    record.url,
+                    record.uri,
                     record.content,
                     record.timestamp,
                     json.dumps(record.metadata) if record.metadata else None,
@@ -1110,7 +1110,7 @@ class TestExport:
         """Import JSONL → SQLite → Export JSONL. Content should be identical."""
         original = tmp_path / "original.jsonl"
         original.write_text(
-            '{"mimetype": "text/plain", "url": "https://example.com", "content": "hello", "timestamp": "2024-01-15", "metadata": {"role": "user", "id": 42}}\n'
+            '{"mimetype": "text/plain", "uri": "https://example.com", "content": "hello", "timestamp": "2024-01-15", "metadata": {"role": "user", "id": 42}}\n'
         )
 
         db = Database(tmp_path / "test.db")
@@ -1122,7 +1122,7 @@ class TestExport:
         exported_line = (out / "test.jsonl").read_text().strip()
         exported = json.loads(exported_line)
         assert exported["mimetype"] == "text/plain"
-        assert exported["url"] == "https://example.com"
+        assert exported["uri"] == "https://example.com"
         assert exported["content"] == "hello"
         assert exported["timestamp"] == "2024-01-15"
         assert exported["metadata"]["role"] == "user"
@@ -1155,12 +1155,12 @@ def export(self, output_dir: Union[str, Path]) -> None:
         count = 0
         with open(jsonl_path, "w", encoding="utf-8") as f:
             for rec_row in self.conn.execute(
-                "SELECT mimetype, url, content, timestamp, metadata FROM records WHERE collection = ? ORDER BY id",
+                "SELECT mimetype, uri, content, timestamp, metadata FROM records WHERE collection = ? ORDER BY id",
                 (coll_name,),
             ):
                 record = Record(
                     mimetype=rec_row[0],
-                    url=rec_row[1],
+                    uri=rec_row[1],
                     content=rec_row[2],
                     timestamp=rec_row[3],
                     metadata=json.loads(rec_row[4]) if rec_row[4] else None,
@@ -1680,7 +1680,7 @@ class TestEndToEnd:
 
         bookmarks = tmp_path / "bookmarks.jsonl"
         bookmarks.write_text(
-            '{"mimetype": "application/json", "url": "https://arxiv.org/abs/2301.00001", "metadata": {"annotation": "Great paper", "tags": ["math"]}}\n'
+            '{"mimetype": "application/json", "uri": "https://arxiv.org/abs/2301.00001", "metadata": {"annotation": "Great paper", "tags": ["math"]}}\n'
         )
 
         # 2. Create manifest
