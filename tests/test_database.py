@@ -131,6 +131,93 @@ class TestQuery:
         db.close()
 
 
+class TestReadOnly:
+    def test_read_only_nonexistent_raises(self, tmp_path):
+        db_path = tmp_path / "nonexistent.db"
+        with pytest.raises(FileNotFoundError, match="Database not found"):
+            Database(db_path, read_only=True)
+
+    def test_read_only_prevents_writes(self, tmp_path):
+        # Create a valid DB first
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.import_jsonl(f, collection="test")
+        db.close()
+
+        # Open read-only and try to write
+        db = Database(db_path, read_only=True)
+        with pytest.raises(Exception):
+            db.conn.execute("INSERT INTO records (content) VALUES ('bad')")
+        db.close()
+
+
+class TestReplaceSemantics:
+    def test_double_import_replaces(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.import_jsonl(f, collection="test")
+        db.import_jsonl(f, collection="test")
+
+        results = db.query("SELECT COUNT(*) as cnt FROM records")
+        assert results[0]["cnt"] == 1
+        db.close()
+
+    def test_replace_only_affects_same_collection(self, tmp_path):
+        f1 = tmp_path / "a.jsonl"
+        f1.write_text('{"content": "aaa"}\n')
+        f2 = tmp_path / "b.jsonl"
+        f2.write_text('{"content": "bbb"}\n')
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.import_jsonl(f1, collection="a")
+        db.import_jsonl(f2, collection="b")
+        # Re-import a
+        db.import_jsonl(f1, collection="a")
+
+        results = db.query("SELECT COUNT(*) as cnt FROM records")
+        assert results[0]["cnt"] == 2
+        db.close()
+
+
+class TestQueryGuard:
+    def test_with_insert_rejected(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.import_jsonl(f, collection="test")
+
+        with pytest.raises(ValueError):
+            db.query(
+                "WITH x AS (SELECT 1) INSERT INTO records (content) VALUES ('hack')"
+            )
+        db.close()
+
+    def test_delete_rejected(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        with pytest.raises(ValueError):
+            db.query("DELETE FROM records")
+        db.close()
+
+    def test_read_only_query_blocks_write_attempt(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.import_jsonl(f, collection="test")
+        db.close()
+
+        db = Database(db_path, read_only=True)
+        with pytest.raises(ValueError):
+            db.query("DROP TABLE records")
+        db.close()
+
+
 class TestInfo:
     def test_get_info(self, tmp_path):
         f = tmp_path / "test.jsonl"

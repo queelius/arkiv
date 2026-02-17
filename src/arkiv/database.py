@@ -12,11 +12,18 @@ from .schema import discover_schema
 class Database:
     """SQLite query layer over arkiv records."""
 
-    def __init__(self, path: Union[str, Path]):
+    def __init__(self, path: Union[str, Path], read_only: bool = False):
         self.path = Path(path)
-        self.conn = sqlite3.connect(str(self.path))
+        if read_only:
+            if not self.path.exists():
+                raise FileNotFoundError(f"Database not found: {self.path}")
+            self.conn = sqlite3.connect(
+                f"file:{self.path}?mode=ro", uri=True
+            )
+        else:
+            self.conn = sqlite3.connect(str(self.path))
+            self._ensure_tables()
         self.conn.row_factory = sqlite3.Row
-        self._ensure_tables()
 
     def _ensure_tables(self) -> None:
         self.conn.executescript(
@@ -50,11 +57,17 @@ class Database:
     ) -> int:
         """Import a JSONL file into the database.
 
+        Replaces any existing records in the same collection.
         Returns the number of records imported.
         """
         path = Path(path)
         if collection is None:
             collection = path.stem
+
+        # Replace semantics: clear existing records for this collection
+        self.conn.execute(
+            "DELETE FROM records WHERE collection = ?", (collection,)
+        )
 
         count = 0
         for record in parse_jsonl(path):
@@ -99,7 +112,14 @@ class Database:
         ):
             raise ValueError("Only SELECT queries are allowed")
 
-        cursor = self.conn.execute(sql)
+        try:
+            cursor = self.conn.execute(sql)
+        except sqlite3.OperationalError as e:
+            raise ValueError(str(e)) from None
+
+        if cursor.description is None:
+            raise ValueError("Only SELECT queries are allowed")
+
         columns = [desc[0] for desc in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 

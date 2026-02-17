@@ -13,6 +13,11 @@ def cmd_import(args):
     from .database import Database
 
     input_path = Path(args.input)
+
+    if input_path.suffix == ".db":
+        print(f"Error: {input_path} is a database file, not a JSONL or manifest file", file=sys.stderr)
+        sys.exit(1)
+
     db = Database(args.db)
 
     if input_path.suffix == ".json":
@@ -29,7 +34,7 @@ def cmd_export(args):
     """Export SQLite database to JSONL files + manifest."""
     from .database import Database
 
-    db = Database(args.db)
+    db = Database(args.db, read_only=True)
     db.export(args.output)
     db.close()
     print(f"Exported to {args.output}")
@@ -42,7 +47,7 @@ def cmd_schema(args):
     if input_path.suffix == ".db":
         from .database import Database
 
-        db = Database(input_path)
+        db = Database(input_path, read_only=True)
         output = db.get_schema()
         db.close()
     else:
@@ -58,7 +63,7 @@ def cmd_query(args):
     """Run a SQL query against the database."""
     from .database import Database
 
-    db = Database(args.db)
+    db = Database(args.db, read_only=True)
     results = db.query(args.sql)
     db.close()
     print(json.dumps(results, indent=2, default=str))
@@ -68,7 +73,7 @@ def cmd_info(args):
     """Print database info."""
     from .database import Database
 
-    db = Database(args.db)
+    db = Database(args.db, read_only=True)
     info = db.get_info()
     db.close()
     print(json.dumps(info, indent=2))
@@ -142,7 +147,17 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    args.func(args)
+    try:
+        args.func(args)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except UnicodeDecodeError:
+        print("Error: File is not valid UTF-8 text (is it a binary file?)", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

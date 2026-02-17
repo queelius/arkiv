@@ -79,6 +79,45 @@ class TestCLI:
         assert result.returncode == 0
         assert "2" in result.stdout
 
+    def test_import_db_file_rejected(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        db_path.write_bytes(b"")
+        result = run_arkiv("import", str(db_path))
+        assert result.returncode == 1
+        assert "database file" in result.stderr.lower()
+
+    def test_query_nonexistent_db(self, tmp_path):
+        db_path = tmp_path / "nope.db"
+        result = run_arkiv("query", str(db_path), "SELECT 1")
+        assert result.returncode == 1
+        assert "Error" in result.stderr
+        assert not db_path.exists()
+
+    def test_info_nonexistent_db(self, tmp_path):
+        db_path = tmp_path / "nope.db"
+        result = run_arkiv("info", str(db_path))
+        assert result.returncode == 1
+        assert "Error" in result.stderr
+
+    def test_schema_nonexistent_db(self, tmp_path):
+        db_path = tmp_path / "nope.db"
+        result = run_arkiv("schema", str(db_path))
+        assert result.returncode == 1
+        assert "Error" in result.stderr
+
+    def test_double_import_no_duplicates(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        db_path = tmp_path / "test.db"
+        run_arkiv("import", str(f), "--db", str(db_path))
+        run_arkiv("import", str(f), "--db", str(db_path))
+        result = run_arkiv(
+            "query", str(db_path), "SELECT COUNT(*) as cnt FROM records"
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data[0]["cnt"] == 1
+
     def test_export(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "hello"}\n')
