@@ -14,6 +14,10 @@ Universal personal data format with JSONL canonical storage, SQLite query layer,
 - Not specific to personas -- longshade is one consumer, but arkiv is general-purpose
 - Not a replacement for SQL databases -- it's an interchange format that imports/exports to SQLite
 
+## Record Fields
+
+`mimetype`, `uri`, `content`, `timestamp`, `metadata` -- all optional. Unknown fields go to `metadata`.
+
 ## Key Principles
 
 1. All record fields optional -- permissive input, best-effort processing
