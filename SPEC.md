@@ -430,10 +430,10 @@ arkiv does not claim to be ECHO's recommended format. ECHO is format-agnostic by
 
 ### Toolkit Output Convention
 
-Source toolkits (ctk, btk, ebk, ptk, mtk) can export as arkiv archives with ECHO compliance:
+Source toolkits (memex, btk, ebk, ptk, mtk, repoindex, chartfold, etc.) can export as arkiv archives with ECHO compliance:
 
 ```
-ctk-export/
+memex-export/
 ├── README.md              # ECHO compliant (self-describing)
 ├── manifest.json          # arkiv manifest (schema discovery)
 ├── conversations.jsonl    # arkiv universal format (human-readable, durable)
@@ -450,11 +450,15 @@ This gives each export two degradation layers and full self-description, with no
 
 Source toolkits export data in arkiv's universal record format:
 
-- **ctk** -- Conversations (ChatGPT, Claude, etc.) → JSONL + SQLite
-- **mtk** -- Email, music → JSONL + SQLite
+- **memex** -- Conversations (ChatGPT, Claude, etc.) → JSONL + SQLite
+- **mtk** -- Email → JSONL + SQLite
 - **btk** -- Bookmarks → JSONL + SQLite
 - **ptk** -- Photos → JSONL + SQLite
 - **ebk** -- Ebooks, reading notes → JSONL + SQLite
+- **repoindex** -- Git repositories and code → JSONL + SQLite
+- **chartfold** -- Health data → JSONL + SQLite
+- **mf** -- Metafunctor tool → JSONL + SQLite
+- **Hugo sites** -- Blog posts/writings (Markdown, naturally compatible)
 
 ### Applications
 

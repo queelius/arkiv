@@ -51,5 +51,5 @@ arkiv info archive.db
 ## Related Projects
 
 - [longshade](../longshade/) -- Persona packaging convention (consumer of arkiv)
-- [ctk](../ctk/), [mtk](../mtk/), [btk](../btk/), [ptk](../ptk/), [ebk](../ebk/) -- Source toolkits (producers of arkiv JSONL)
+- [memex](../memex/), [mtk](../mtk/), [btk](../btk/), [ptk](../ptk/), [ebk](../ebk/), [repoindex](../repoindex/), [chartfold](../chartfold/) -- Source toolkits (producers of arkiv JSONL)
 - [longecho](../longecho/) -- ECHO compliance validator
