@@ -457,8 +457,7 @@ Source toolkits export data in arkiv's universal record format:
 - **ebk** -- Ebooks, reading notes → JSONL + SQLite
 - **repoindex** -- Git repositories and code → JSONL + SQLite
 - **chartfold** -- Health data → JSONL + SQLite
-- **mf** -- Metafunctor tool → JSONL + SQLite
-- **Hugo sites** -- Blog posts/writings (Markdown, naturally compatible)
+- **mf/Hugo** -- Blog posts, writings (mf is a Hugo tool; Markdown content is naturally compatible)
 
 ### Applications
 
