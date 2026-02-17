@@ -36,11 +36,21 @@ def cmd_export(args):
 
 
 def cmd_schema(args):
-    """Discover and print schema from a JSONL file."""
-    from .schema import discover_schema
+    """Show schema from a JSONL file or SQLite database."""
+    input_path = Path(args.input)
 
-    schema = discover_schema(args.input)
-    output = {key: entry.to_dict() for key, entry in schema.items()}
+    if input_path.suffix == ".db":
+        from .database import Database
+
+        db = Database(input_path)
+        output = db.get_schema()
+        db.close()
+    else:
+        from .schema import discover_schema
+
+        schema = discover_schema(input_path)
+        output = {key: entry.to_dict() for key, entry in schema.items()}
+
     print(json.dumps(output, indent=2))
 
 
@@ -105,9 +115,9 @@ def main():
 
     # schema
     p_schema = subparsers.add_parser(
-        "schema", help="Discover schema from JSONL"
+        "schema", help="Show schema from JSONL file or database"
     )
-    p_schema.add_argument("input", help="JSONL file")
+    p_schema.add_argument("input", help="JSONL file or SQLite database")
     p_schema.set_defaults(func=cmd_schema)
 
     # query

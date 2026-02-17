@@ -61,6 +61,15 @@ class TestCLI:
         assert result.returncode == 0
         assert "role" in result.stdout
 
+    def test_schema_from_db(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        db_path = tmp_path / "test.db"
+        run_arkiv("import", str(f), "--db", str(db_path))
+        result = run_arkiv("schema", str(db_path))
+        assert result.returncode == 0
+        assert "role" in result.stdout
+
     def test_info(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "a"}\n{"content": "b"}\n')
