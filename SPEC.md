@@ -455,6 +455,8 @@ An arkiv archive can be wrapped with pagevault to produce an encrypted, ECHO-com
 
 This is especially important for persona data (conversations, voice, memories) where the owner may want the archive accessible to family or designated people but not the public.
 
+**Tradeoff:** pagevault requires HTML + CSS + JavaScript (a browser) to decrypt and view content. This is less ECHO-compliant than plain JSONL, which only needs a text editor. Encryption and graceful degradation are fundamentally in tension -- you can't read encrypted data with `cat`. The pragmatic choice: privacy when needed, plaintext when possible.
+
 ---
 
 ## Relationship to Other Projects
