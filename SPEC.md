@@ -442,6 +442,19 @@ memex-export/
 
 This gives each export two degradation layers and full self-description, with no extra effort from the toolkit.
 
+### Privacy and Encryption
+
+arkiv archives contain personal data that may require access control. **pagevault** provides encrypted, password-protected viewing of static content with an embedded self-contained viewer.
+
+An arkiv archive can be wrapped with pagevault to produce an encrypted, ECHO-compliant package:
+
+- The archive is still a static file (durable, local-first)
+- The viewer is embedded (self-contained, no external dependencies)
+- User management controls who can access the data
+- Encryption does not break ECHO's durability guarantees -- the viewer travels with the data
+
+This is especially important for persona data (conversations, voice, memories) where the owner may want the archive accessible to family or designated people but not the public.
+
 ---
 
 ## Relationship to Other Projects
@@ -464,6 +477,10 @@ Source toolkits export data in arkiv's universal record format:
 - **longshade** -- Packages arkiv data as a conversable persona (system prompt + voice samples + data)
 - **Any analytics/visualization tool** -- Query the SQLite directly
 - **Any LLM** -- Via MCP server
+
+### Privacy
+
+- **pagevault** -- Encrypted viewing with embedded self-contained viewer. Wraps arkiv archives for password-protected access.
 
 ### Compliance
 
