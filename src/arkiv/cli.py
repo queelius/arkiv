@@ -117,11 +117,24 @@ def cmd_info(args):
     print(json.dumps(info, indent=2))
 
 
+def _require_jsonl(path, suggestion):
+    """Check that path is a JSONL file, not a database."""
+    p = Path(path)
+    if p.suffix == ".db":
+        print(
+            f"Error: {p.name} is a SQLite database, not a JSONL file.\n"
+            f"Try: arkiv {suggestion} {p.name}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def cmd_detect(args):
     """Check if a JSONL file is valid arkiv format."""
     import json as json_mod
 
     input_path = Path(args.input)
+    _require_jsonl(input_path, "info")
     known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
     field_suggestions = {
         "url": "uri", "link": "uri", "href": "uri",
@@ -191,6 +204,7 @@ def cmd_fix(args):
     import json as json_mod
 
     input_path = Path(args.input)
+    _require_jsonl(input_path, "info")
     known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
     # Unambiguous fixes: unknown field -> arkiv field to duplicate into
     fix_map = {"url": "uri", "link": "uri", "href": "uri"}
