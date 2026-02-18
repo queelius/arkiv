@@ -176,7 +176,7 @@ def cmd_detect(args):
             )
 
     result = {
-        "valid": errors == 0,
+        "valid_jsonl": errors == 0,
         "total_records": total,
         "collection": input_path.stem,
         "fields_used": sorted(fields_used),
