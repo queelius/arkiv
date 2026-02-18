@@ -205,6 +205,54 @@ class TestCLI:
         data = json.loads(result.stdout)
         assert data["total_records"] == 0
 
+    # --- detect --strict ---
+
+    def test_detect_strict_exits_1_on_warnings(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"url": "https://example.com"}\n')
+        result = run_arkiv("detect", "--strict", str(f))
+        assert result.returncode == 1
+
+    def test_detect_strict_exits_0_when_clean(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"uri": "https://example.com", "content": "hi"}\n')
+        result = run_arkiv("detect", "--strict", str(f))
+        assert result.returncode == 0
+
+    # --- detect --fix ---
+
+    def test_detect_fix_duplicates_url_to_uri(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"url": "https://example.com", "content": "hi"}\n')
+        result = run_arkiv("detect", "--fix", str(f))
+        assert result.returncode == 0
+        assert "fixed" in result.stdout.lower() or "uri" in result.stdout.lower()
+        # Verify the file was rewritten with uri added, url preserved
+        import json as json_mod
+        line = f.read_text().strip()
+        obj = json_mod.loads(line)
+        assert obj["uri"] == "https://example.com"
+        assert obj["url"] == "https://example.com"
+
+    def test_detect_fix_skips_if_target_exists(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"url": "old", "uri": "correct", "content": "hi"}\n')
+        result = run_arkiv("detect", "--fix", str(f))
+        assert result.returncode == 0
+        import json as json_mod
+        obj = json_mod.loads(f.read_text().strip())
+        assert obj["uri"] == "correct"
+        assert obj["url"] == "old"
+
+    def test_detect_fix_idempotent(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"url": "https://example.com"}\n')
+        run_arkiv("detect", "--fix", str(f))
+        content_after_first = f.read_text()
+        run_arkiv("detect", "--fix", str(f))
+        content_after_second = f.read_text()
+        assert content_after_first == content_after_second
+
     # --- mcp subcommand ---
 
     def test_mcp_in_help(self):

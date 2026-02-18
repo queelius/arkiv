@@ -123,8 +123,14 @@ def cmd_detect(args):
 
     input_path = Path(args.input)
     known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
-    # Common misspellings/alternatives -> correct field name
-    field_suggestions = {"url": "uri", "type": "mimetype", "mime": "mimetype"}
+    # Unambiguous fixes: unknown field -> arkiv field to duplicate into
+    fix_map = {"url": "uri", "link": "uri", "href": "uri"}
+    # Broader suggestions for warnings (includes ambiguous ones)
+    field_suggestions = {**fix_map, "type": "mimetype", "mime": "mimetype"}
+
+    if args.fix:
+        _detect_fix(input_path, known_fields, fix_map)
+        return
 
     total = 0
     fields_used = set()
@@ -176,6 +182,47 @@ def cmd_detect(args):
         "warnings": warnings,
     }
     print(json.dumps(result, indent=2))
+
+    if args.strict and warnings:
+        sys.exit(1)
+
+
+def _detect_fix(input_path, known_fields, fix_map):
+    """Rewrite a JSONL file, duplicating fixable unknown fields into known ones."""
+    import json as json_mod
+
+    lines = input_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    fixed_count = 0
+    out_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            out_lines.append(line)
+            continue
+        try:
+            obj = json_mod.loads(stripped)
+        except json_mod.JSONDecodeError:
+            out_lines.append(line)
+            continue
+        if not isinstance(obj, dict):
+            out_lines.append(line)
+            continue
+
+        changed = False
+        for unknown_field, target_field in fix_map.items():
+            if unknown_field in obj and target_field not in obj:
+                obj[target_field] = obj[unknown_field]
+                changed = True
+                fixed_count += 1
+
+        if changed:
+            out_lines.append(json_mod.dumps(obj, ensure_ascii=False) + "\n")
+        else:
+            out_lines.append(line)
+
+    input_path.write_text("".join(out_lines), encoding="utf-8")
+    print(json.dumps({"fixed": fixed_count, "file": str(input_path)}, indent=2))
 
 
 def cmd_mcp(args):
@@ -242,6 +289,14 @@ def main():
         "detect", help="Check if a JSONL file is valid arkiv format"
     )
     p_detect.add_argument("input", help="JSONL file to check")
+    p_detect.add_argument(
+        "--strict", action="store_true", help="Exit 1 if any warnings"
+    )
+    p_detect.add_argument(
+        "--fix",
+        action="store_true",
+        help="Fix known field misspellings by duplicating (e.g. url -> uri)",
+    )
     p_detect.set_defaults(func=cmd_detect)
 
     # mcp
