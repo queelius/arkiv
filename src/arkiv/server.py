@@ -16,7 +16,7 @@ class ArkivServer:
         db_path: Union[str, Path],
         manifest_path: Optional[Union[str, Path]] = None,
     ):
-        self.db = Database(db_path)
+        self.db = Database(db_path, read_only=True)
         self.manifest = None
         if manifest_path and Path(manifest_path).exists():
             self.manifest = load_manifest(manifest_path)
@@ -61,38 +61,31 @@ def run_mcp_server(
     db_path: str,
     manifest_path: Optional[str] = None,
 ):
-    """Run the arkiv MCP server."""
+    """Run the arkiv MCP server over stdio."""
     try:
-        from mcp.server import Server
-        from mcp.server.stdio import stdio_server
+        from mcp.server.fastmcp import FastMCP
     except ImportError:
         raise ImportError(
             "MCP server requires 'mcp' package. Install with: pip install arkiv[mcp]"
         )
 
-    import asyncio
-
-    server = Server("arkiv")
+    mcp = FastMCP("arkiv")
     arkiv = ArkivServer(db_path, manifest_path)
 
-    @server.tool()
-    async def get_manifest() -> str:
-        """Get manifest with collection descriptions and pre-computed schemas."""
+    @mcp.tool()
+    def get_manifest() -> str:
+        """Get the archive manifest: lists all collections with record counts and pre-computed metadata schemas. Call this first to understand what data is available."""
         return json.dumps(arkiv.get_manifest(), indent=2)
 
-    @server.tool()
-    async def get_schema(collection: Optional[str] = None) -> str:
-        """Get metadata schema for one or all collections."""
+    @mcp.tool()
+    def get_schema(collection: Optional[str] = None) -> str:
+        """Get metadata schema for a collection. Shows all metadata keys, their types, counts, and sample values. Use this to understand what fields are queryable via json_extract(metadata, '$.key')."""
         return json.dumps(arkiv.get_schema(collection), indent=2)
 
-    @server.tool()
-    async def sql_query(query: str) -> str:
-        """Run read-only SQL query against the archive."""
+    @mcp.tool()
+    def sql_query(query: str) -> str:
+        """Run a read-only SQL query against the archive. The 'records' table has columns: id, collection, mimetype, uri, content, timestamp, metadata (JSON). Use json_extract(metadata, '$.key') to query metadata fields. Only SELECT statements are allowed."""
         results = arkiv.sql_query(query)
         return json.dumps(results, indent=2, default=str)
 
-    async def _run():
-        async with stdio_server() as (read_stream, write_stream):
-            await server.run(read_stream, write_stream)
-
-    asyncio.run(_run())
+    mcp.run(transport="stdio")

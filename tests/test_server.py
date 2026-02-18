@@ -17,6 +17,7 @@ class TestArkivServer:
 
         db = Database(tmp_path / "test.db")
         db.import_jsonl(f, collection="conversations")
+        db.close()
 
         # Write manifest
         from arkiv.manifest import Manifest, Collection, save_manifest
@@ -67,6 +68,7 @@ class TestArkivServer:
 
         db = Database(tmp_path / "test.db")
         db.import_jsonl(f, collection="data")
+        db.close()
 
         srv = ArkivServer(db_path=tmp_path / "test.db")
         result = srv.get_manifest()
