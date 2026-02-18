@@ -184,6 +184,7 @@ class TestCLI:
         result = run_arkiv("detect", str(f))
         assert result.returncode == 0
         data = json.loads(result.stdout)
+        assert data["valid"] is False  # parse errors make it invalid
         assert data["total_records"] == 2
         assert len(data["warnings"]) > 0
 
@@ -193,7 +194,7 @@ class TestCLI:
         result = run_arkiv("detect", str(f))
         assert result.returncode == 0
         data = json.loads(result.stdout)
-        assert data["valid"] is False
+        assert data["valid"] is True  # unknown fields are warnings, not errors
         assert "url" in data["unknown_fields"]
         assert any("uri" in w for w in data["warnings"])
 

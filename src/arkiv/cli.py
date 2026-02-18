@@ -133,6 +133,7 @@ def cmd_detect(args):
         return
 
     total = 0
+    errors = 0
     fields_used = set()
     unknown_fields = set()
     metadata_keys = set()
@@ -147,9 +148,11 @@ def cmd_detect(args):
                 obj = json_mod.loads(line)
             except json_mod.JSONDecodeError:
                 warnings.append(f"Line {lineno}: invalid JSON")
+                errors += 1
                 continue
             if not isinstance(obj, dict):
                 warnings.append(f"Line {lineno}: not a JSON object")
+                errors += 1
                 continue
 
             total += 1
@@ -173,7 +176,7 @@ def cmd_detect(args):
             )
 
     result = {
-        "valid": len(warnings) == 0,
+        "valid": errors == 0,
         "total_records": total,
         "collection": input_path.stem,
         "fields_used": sorted(fields_used),
