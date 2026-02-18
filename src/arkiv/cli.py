@@ -123,10 +123,10 @@ def cmd_detect(args):
 
     input_path = Path(args.input)
     known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
-    # Unambiguous fixes: unknown field -> arkiv field to duplicate into
-    fix_map = {"url": "uri", "link": "uri", "href": "uri"}
-    # Broader suggestions for warnings (includes ambiguous ones)
-    field_suggestions = {**fix_map, "type": "mimetype", "mime": "mimetype"}
+    field_suggestions = {
+        "url": "uri", "link": "uri", "href": "uri",
+        "type": "mimetype", "mime": "mimetype",
+    }
 
     total = 0
     errors = 0
