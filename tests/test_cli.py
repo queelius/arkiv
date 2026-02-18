@@ -222,10 +222,10 @@ class TestCLI:
 
     # --- detect --fix ---
 
-    def test_detect_fix_duplicates_url_to_uri(self, tmp_path):
+    def test_fix_duplicates_url_to_uri(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text('{"url": "https://example.com", "content": "hi"}\n')
-        result = run_arkiv("detect", "--fix", str(f))
+        result = run_arkiv("fix", str(f))
         assert result.returncode == 0
         assert "fixed" in result.stdout.lower() or "uri" in result.stdout.lower()
         # Verify the file was rewritten with uri added, url preserved
@@ -235,22 +235,22 @@ class TestCLI:
         assert obj["uri"] == "https://example.com"
         assert obj["url"] == "https://example.com"
 
-    def test_detect_fix_skips_if_target_exists(self, tmp_path):
+    def test_fix_skips_if_target_exists(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text('{"url": "old", "uri": "correct", "content": "hi"}\n')
-        result = run_arkiv("detect", "--fix", str(f))
+        result = run_arkiv("fix", str(f))
         assert result.returncode == 0
         import json as json_mod
         obj = json_mod.loads(f.read_text().strip())
         assert obj["uri"] == "correct"
         assert obj["url"] == "old"
 
-    def test_detect_fix_idempotent(self, tmp_path):
+    def test_fix_idempotent(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text('{"url": "https://example.com"}\n')
-        run_arkiv("detect", "--fix", str(f))
+        run_arkiv("fix", str(f))
         content_after_first = f.read_text()
-        run_arkiv("detect", "--fix", str(f))
+        run_arkiv("fix", str(f))
         content_after_second = f.read_text()
         assert content_after_first == content_after_second
 

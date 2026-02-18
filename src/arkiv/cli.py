@@ -128,10 +128,6 @@ def cmd_detect(args):
     # Broader suggestions for warnings (includes ambiguous ones)
     field_suggestions = {**fix_map, "type": "mimetype", "mime": "mimetype"}
 
-    if args.fix:
-        _detect_fix(input_path, known_fields, fix_map)
-        return
-
     total = 0
     errors = 0
     fields_used = set()
@@ -190,9 +186,14 @@ def cmd_detect(args):
         sys.exit(1)
 
 
-def _detect_fix(input_path, known_fields, fix_map):
-    """Rewrite a JSONL file, duplicating fixable unknown fields into known ones."""
+def cmd_fix(args):
+    """Fix known field misspellings in a JSONL file."""
     import json as json_mod
+
+    input_path = Path(args.input)
+    known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
+    # Unambiguous fixes: unknown field -> arkiv field to duplicate into
+    fix_map = {"url": "uri", "link": "uri", "href": "uri"}
 
     lines = input_path.read_text(encoding="utf-8").splitlines(keepends=True)
     fixed_count = 0
@@ -295,12 +296,14 @@ def main():
     p_detect.add_argument(
         "--strict", action="store_true", help="Exit 1 if any warnings"
     )
-    p_detect.add_argument(
-        "--fix",
-        action="store_true",
-        help="Fix known field misspellings by duplicating (e.g. url -> uri)",
-    )
     p_detect.set_defaults(func=cmd_detect)
+
+    # fix
+    p_fix = subparsers.add_parser(
+        "fix", help="Fix known field misspellings in JSONL (e.g. url -> uri)"
+    )
+    p_fix.add_argument("input", help="JSONL file to fix")
+    p_fix.set_defaults(func=cmd_fix)
 
     # mcp
     p_mcp = subparsers.add_parser("mcp", help="Start MCP server")
