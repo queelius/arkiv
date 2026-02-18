@@ -30,10 +30,26 @@ def cmd_import(args):
     db.close()
 
 
+def _require_db(path, command):
+    """Check that path looks like a database, not JSONL."""
+    p = Path(path)
+    if p.suffix in (".jsonl", ".json"):
+        name = p.name
+        print(
+            f"Error: {name} is a JSONL file, not a SQLite database.\n"
+            f"Import it first:\n"
+            f"  arkiv import {name} --db archive.db\n"
+            f"  arkiv {command} archive.db ...",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def cmd_export(args):
     """Export SQLite database to JSONL files + manifest."""
     from .database import Database
 
+    _require_db(args.db, "export")
     db = Database(args.db, read_only=True)
     db.export(args.output)
     db.close()
@@ -63,6 +79,7 @@ def cmd_query(args):
     """Run a SQL query against the database."""
     from .database import Database
 
+    _require_db(args.db, "query")
     db = Database(args.db, read_only=True)
     results = db.query(args.sql)
     db.close()
@@ -70,16 +87,83 @@ def cmd_query(args):
 
 
 def cmd_info(args):
-    """Print database info."""
-    from .database import Database
+    """Print info about a JSONL file or SQLite database."""
+    input_path = Path(args.input)
 
-    db = Database(args.db, read_only=True)
-    info = db.get_info()
-    db.close()
+    if input_path.suffix == ".db":
+        from .database import Database
+
+        db = Database(input_path, read_only=True)
+        info = db.get_info()
+        db.close()
+    else:
+        from .record import parse_jsonl
+        from .schema import discover_schema
+
+        collection = input_path.stem
+        records = list(parse_jsonl(input_path))
+        schema = discover_schema(input_path)
+        metadata_keys = {key: entry.to_dict() for key, entry in schema.items()}
+
+        coll_info = {"record_count": len(records)}
+        if metadata_keys:
+            coll_info["metadata_keys"] = metadata_keys
+
+        info = {
+            "total_records": len(records),
+            "collections": {collection: coll_info},
+        }
+
     print(json.dumps(info, indent=2))
 
 
-def cmd_serve(args):
+def cmd_detect(args):
+    """Check if a JSONL file is valid arkiv format."""
+    import json as json_mod
+
+    input_path = Path(args.input)
+    known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
+
+    total = 0
+    fields_used = set()
+    metadata_keys = set()
+    warnings = []
+
+    with open(input_path, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json_mod.loads(line)
+            except json_mod.JSONDecodeError:
+                warnings.append(f"Line {lineno}: invalid JSON")
+                continue
+            if not isinstance(obj, dict):
+                warnings.append(f"Line {lineno}: not a JSON object")
+                continue
+
+            total += 1
+            for key in obj:
+                if key in known_fields:
+                    fields_used.add(key)
+                else:
+                    fields_used.add(key)
+            if isinstance(obj.get("metadata"), dict):
+                metadata_keys.update(obj["metadata"].keys())
+
+    result = {
+        "valid": len(warnings) == 0,
+        "total_records": total,
+        "collection": input_path.stem,
+        "fields_used": sorted(fields_used),
+        "metadata_keys": sorted(metadata_keys),
+        "warnings": warnings,
+    }
+    print(json.dumps(result, indent=2))
+
+
+def cmd_mcp(args):
     """Start the MCP server."""
     from .server import run_mcp_server
 
@@ -132,15 +216,24 @@ def main():
     p_query.set_defaults(func=cmd_query)
 
     # info
-    p_info = subparsers.add_parser("info", help="Show database info")
-    p_info.add_argument("db", help="SQLite database path")
+    p_info = subparsers.add_parser(
+        "info", help="Show info about JSONL file or database"
+    )
+    p_info.add_argument("input", help="JSONL file or SQLite database")
     p_info.set_defaults(func=cmd_info)
 
-    # serve
-    p_serve = subparsers.add_parser("serve", help="Start MCP server")
-    p_serve.add_argument("db", help="SQLite database path")
-    p_serve.add_argument("--manifest", help="Manifest JSON path")
-    p_serve.set_defaults(func=cmd_serve)
+    # detect
+    p_detect = subparsers.add_parser(
+        "detect", help="Check if a JSONL file is valid arkiv format"
+    )
+    p_detect.add_argument("input", help="JSONL file to check")
+    p_detect.set_defaults(func=cmd_detect)
+
+    # mcp
+    p_mcp = subparsers.add_parser("mcp", help="Start MCP server")
+    p_mcp.add_argument("db", help="SQLite database path")
+    p_mcp.add_argument("--manifest", help="Manifest JSON path")
+    p_mcp.set_defaults(func=cmd_mcp)
 
     args = parser.parse_args()
     if not args.command:
