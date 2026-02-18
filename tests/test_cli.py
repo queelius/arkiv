@@ -187,6 +187,16 @@ class TestCLI:
         assert data["total_records"] == 2
         assert len(data["warnings"]) > 0
 
+    def test_detect_warns_unknown_fields(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "hi", "url": "https://example.com"}\n')
+        result = run_arkiv("detect", str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["valid"] is False
+        assert "url" in data["unknown_fields"]
+        assert any("uri" in w for w in data["warnings"])
+
     def test_detect_empty_file(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text("")

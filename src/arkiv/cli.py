@@ -123,9 +123,12 @@ def cmd_detect(args):
 
     input_path = Path(args.input)
     known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
+    # Common misspellings/alternatives -> correct field name
+    field_suggestions = {"url": "uri", "type": "mimetype", "mime": "mimetype"}
 
     total = 0
     fields_used = set()
+    unknown_fields = set()
     metadata_keys = set()
     warnings = []
 
@@ -148,15 +151,27 @@ def cmd_detect(args):
                 if key in known_fields:
                     fields_used.add(key)
                 else:
-                    fields_used.add(key)
+                    unknown_fields.add(key)
             if isinstance(obj.get("metadata"), dict):
                 metadata_keys.update(obj["metadata"].keys())
+
+    for field in sorted(unknown_fields):
+        suggestion = field_suggestions.get(field)
+        if suggestion:
+            warnings.append(
+                f"Unknown field '{field}' — did you mean '{suggestion}'?"
+            )
+        else:
+            warnings.append(
+                f"Unknown field '{field}' (will be merged into metadata on import)"
+            )
 
     result = {
         "valid": len(warnings) == 0,
         "total_records": total,
         "collection": input_path.stem,
         "fields_used": sorted(fields_used),
+        "unknown_fields": sorted(unknown_fields),
         "metadata_keys": sorted(metadata_keys),
         "warnings": warnings,
     }
