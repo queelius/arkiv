@@ -218,6 +218,171 @@ class TestQueryGuard:
         db.close()
 
 
+class TestSchemaDescription:
+    def test_schema_has_description_column(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+
+        schema = db.get_schema("test")
+        # Description defaults to None when not curated
+        assert "description" not in schema["metadata_keys"]["role"]
+        db.close()
+
+    def test_merge_curated_schema(self, tmp_path):
+        from arkiv.schema import SchemaEntry
+
+        f = tmp_path / "test.jsonl"
+        f.write_text(
+            '{"metadata": {"role": "user"}}\n'
+            '{"metadata": {"role": "assistant"}}\n'
+        )
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+
+        curated = {
+            "role": SchemaEntry(
+                type="string", count=0, description="Speaker identity"
+            ),
+        }
+        db.merge_curated_schema("test", curated)
+
+        schema = db.get_schema("test")
+        assert schema["metadata_keys"]["role"]["description"] == "Speaker identity"
+        # Live fields should come from auto-discovered data
+        assert schema["metadata_keys"]["role"]["count"] == 2
+        db.close()
+
+    def test_merge_curated_adds_missing_keys(self, tmp_path):
+        from arkiv.schema import SchemaEntry
+
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+
+        curated = {
+            "old_key": SchemaEntry(
+                type="string", count=10, description="Deprecated"
+            ),
+        }
+        db.merge_curated_schema("test", curated)
+
+        schema = db.get_schema("test")
+        assert "old_key" in schema["metadata_keys"]
+        assert schema["metadata_keys"]["old_key"]["count"] == 0
+        assert schema["metadata_keys"]["old_key"]["description"] == "Deprecated"
+        db.close()
+
+    def test_reimport_preserves_descriptions(self, tmp_path):
+        from arkiv.schema import SchemaEntry
+
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+
+        # Add curated description
+        curated = {
+            "role": SchemaEntry(
+                type="string", count=0, description="Speaker identity"
+            ),
+        }
+        db.merge_curated_schema("test", curated)
+
+        # Re-import same JSONL
+        db.import_jsonl(f, collection="test")
+
+        schema = db.get_schema("test")
+        assert schema["metadata_keys"]["role"]["description"] == "Speaker identity"
+        db.close()
+
+
+class TestReadmeMetadata:
+    def test_store_and_load_readme(self, tmp_path):
+        from arkiv.readme import Readme
+
+        db = Database(tmp_path / "test.db")
+        readme = Readme(
+            frontmatter={"name": "Test", "description": "A test"},
+            body="# Test\n",
+        )
+        db._store_readme_metadata(readme)
+        loaded = db._load_readme_metadata()
+        assert loaded.frontmatter["name"] == "Test"
+        assert loaded.frontmatter["description"] == "A test"
+        assert "# Test" in loaded.body
+        db.close()
+
+    def test_load_returns_none_when_empty(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        loaded = db._load_readme_metadata()
+        assert loaded is None
+        db.close()
+
+    def test_import_readme_stores_metadata(self, tmp_path):
+        (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
+        readme_text = (
+            "---\nname: Test Archive\ndescription: A test\n"
+            "contents:\n- path: data.jsonl\n  description: Test data\n---\n"
+            "# Test Archive\n"
+        )
+        (tmp_path / "README.md").write_text(readme_text)
+
+        db = Database(tmp_path / "test.db")
+        count = db.import_readme(tmp_path / "README.md")
+        assert count == 1
+
+        loaded = db._load_readme_metadata()
+        assert loaded.frontmatter["name"] == "Test Archive"
+        db.close()
+
+    def test_import_readme_merges_schema_yaml(self, tmp_path):
+        (tmp_path / "data.jsonl").write_text(
+            '{"metadata": {"role": "user"}}\n'
+        )
+        readme_text = (
+            "---\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        (tmp_path / "README.md").write_text(readme_text)
+
+        schema_yaml = (
+            "data:\n  record_count: 1\n  metadata_keys:\n"
+            "    role:\n      description: Speaker identity\n"
+            "      type: string\n      count: 1\n"
+        )
+        (tmp_path / "schema.yaml").write_text(schema_yaml)
+
+        db = Database(tmp_path / "test.db")
+        db.import_readme(tmp_path / "README.md")
+
+        schema = db.get_schema("data")
+        assert schema["metadata_keys"]["role"]["description"] == "Speaker identity"
+        db.close()
+
+    def test_import_manifest_stores_as_readme_metadata(self, tmp_path):
+        """Backwards compat: import manifest.json → metadata survives in _metadata."""
+        (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
+        manifest = {
+            "description": "My archive",
+            "created": "2024-06-15",
+            "collections": [
+                {"file": "data.jsonl", "description": "Test data"},
+            ],
+        }
+        (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+        db = Database(tmp_path / "test.db")
+        db.import_manifest(tmp_path / "manifest.json")
+
+        loaded = db._load_readme_metadata()
+        assert loaded.frontmatter["description"] == "My archive"
+        assert loaded.frontmatter["datetime"] == "2024-06-15"
+        assert loaded.frontmatter["contents"][0]["description"] == "Test data"
+        db.close()
+
+
 class TestInfo:
     def test_get_info(self, tmp_path):
         f = tmp_path / "test.jsonl"

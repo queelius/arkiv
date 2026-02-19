@@ -36,21 +36,40 @@ flake8 src/ tests/
 mypy src/
 ```
 
+## Archive Format
+
+An arkiv archive directory contains:
+
+```
+archive/
+├── README.md           # ECHO self-description (YAML frontmatter + markdown)
+├── schema.yaml         # Structured metadata schema (auto-generated, curatable)
+├── conversations.jsonl
+└── bookmarks.jsonl
+```
+
+- **README.md** -- YAML frontmatter (`name`, `description`, `datetime`, `generator`, `contents`) + markdown body
+- **schema.yaml** -- per-collection metadata keys with type, count, values, description
+- **Merge-on-import** -- live fields (type, count) recomputed from data; stable fields (description, curated values) preserved
+
 ## Expected CLI
 
 ```bash
-arkiv import conversations.jsonl --db archive.db
-arkiv import manifest.json --db archive.db
-arkiv export archive.db --output ./exported/
+arkiv import README.md --db archive.db        # import via README.md (resolves contents)
+arkiv import conversations.jsonl --db archive.db  # import bare JSONL
+arkiv import ./archive/ --db archive.db       # import directory (finds README.md)
+arkiv export archive.db --output ./exported/  # exports JSONL + README.md + schema.yaml
 arkiv schema conversations.jsonl
 arkiv query archive.db "SELECT ..."
-arkiv serve archive.db --port 8002
 arkiv info archive.db
+arkiv detect conversations.jsonl              # validate arkiv format + schema.yaml
+arkiv fix conversations.jsonl                 # fix known field misspellings
+arkiv mcp archive.db                          # start MCP server
 ```
 
 ## Tech Stack
 
-- Python 3.8+, sqlite3 (stdlib), json (stdlib), MCP Python SDK
+- Python 3.8+, sqlite3 (stdlib), json (stdlib), pyyaml, MCP Python SDK
 
 ## Related Projects
 

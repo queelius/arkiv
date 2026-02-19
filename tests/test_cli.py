@@ -269,4 +269,153 @@ class TestCLI:
         result = run_arkiv("export", str(db_path), "--output", str(out))
         assert result.returncode == 0
         assert (out / "test.jsonl").exists()
-        assert (out / "manifest.json").exists()
+        assert (out / "README.md").exists()
+        assert (out / "schema.yaml").exists()
+
+    def test_import_readme(self, tmp_path):
+        (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
+        readme_text = (
+            "---\nname: Test\ncontents:\n- path: data.jsonl\n---\n# Test\n"
+        )
+        (tmp_path / "README.md").write_text(readme_text)
+        db_path = tmp_path / "test.db"
+        result = run_arkiv(
+            "import", str(tmp_path / "README.md"), "--db", str(db_path)
+        )
+        assert result.returncode == 0
+        assert "1" in result.stdout
+
+    def test_import_directory(self, tmp_path):
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        (archive_dir / "data.jsonl").write_text('{"content": "hello"}\n')
+        readme_text = (
+            "---\nname: Test\ncontents:\n- path: data.jsonl\n---\n# Test\n"
+        )
+        (archive_dir / "README.md").write_text(readme_text)
+        db_path = tmp_path / "test.db"
+        result = run_arkiv(
+            "import", str(archive_dir), "--db", str(db_path)
+        )
+        assert result.returncode == 0
+        assert "1" in result.stdout
+
+    def test_import_directory_fallback_manifest(self, tmp_path):
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        (archive_dir / "data.jsonl").write_text('{"content": "hello"}\n')
+        manifest = {"collections": [{"file": "data.jsonl"}]}
+        (archive_dir / "manifest.json").write_text(json.dumps(manifest))
+        db_path = tmp_path / "test.db"
+        result = run_arkiv(
+            "import", str(archive_dir), "--db", str(db_path)
+        )
+        assert result.returncode == 0
+
+    def test_import_empty_directory(self, tmp_path):
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        db_path = tmp_path / "test.db"
+        result = run_arkiv(
+            "import", str(archive_dir), "--db", str(db_path)
+        )
+        assert result.returncode == 1
+        assert "No README.md or manifest.json" in result.stderr
+
+    def test_export_preserves_readme_metadata(self, tmp_path):
+        (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
+        readme_text = (
+            "---\nname: CLI test archive\ndescription: A test\n"
+            "contents:\n- path: data.jsonl\n  description: Test data\n---\n"
+            "# CLI test archive\n"
+        )
+        (tmp_path / "README.md").write_text(readme_text)
+        db_path = tmp_path / "test.db"
+        run_arkiv("import", str(tmp_path / "README.md"), "--db", str(db_path))
+        out = tmp_path / "exported"
+        result = run_arkiv("export", str(db_path), "--output", str(out))
+        assert result.returncode == 0
+
+        import yaml
+        readme_text = (out / "README.md").read_text()
+        # Parse frontmatter
+        from arkiv.readme import parse_readme
+        exported = parse_readme(out / "README.md")
+        assert exported.frontmatter["name"] == "CLI test archive"
+        assert exported.frontmatter["description"] == "A test"
+        coll_by_path = {
+            c["path"]: c for c in exported.frontmatter.get("contents", [])
+        }
+        assert coll_by_path["data.jsonl"]["description"] == "Test data"
+
+    # --- detect with schema.yaml ---
+
+    def test_detect_with_schema_warns_missing_key(self, tmp_path):
+        """Key in schema.yaml but not in data → warning."""
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        schema_yaml = (
+            "test:\n  record_count: 1\n  metadata_keys:\n"
+            "    role:\n      type: string\n      count: 1\n"
+            "    old_key:\n      type: string\n      count: 5\n"
+            "      description: Deprecated\n"
+        )
+        (tmp_path / "schema.yaml").write_text(schema_yaml)
+
+        result = run_arkiv("detect", str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert any("old_key" in w and "not found" in w for w in data["warnings"])
+
+    def test_detect_with_schema_info_undocumented(self, tmp_path):
+        """Key in data but not in schema.yaml → info."""
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"role": "user", "extra": "val"}}\n')
+        schema_yaml = (
+            "test:\n  record_count: 1\n  metadata_keys:\n"
+            "    role:\n      type: string\n      count: 1\n"
+        )
+        (tmp_path / "schema.yaml").write_text(schema_yaml)
+
+        result = run_arkiv("detect", str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert any("extra" in i for i in data.get("schema_info", []))
+
+    def test_detect_with_schema_type_mismatch(self, tmp_path):
+        """Type mismatch between schema and data → warning."""
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"count": 42}}\n')
+        schema_yaml = (
+            "test:\n  record_count: 1\n  metadata_keys:\n"
+            "    count:\n      type: string\n      count: 1\n"
+        )
+        (tmp_path / "schema.yaml").write_text(schema_yaml)
+
+        result = run_arkiv("detect", str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert any("Type mismatch" in w for w in data["warnings"])
+
+    def test_detect_strict_with_schema_warnings(self, tmp_path):
+        """Schema warnings should trigger --strict exit 1."""
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        schema_yaml = (
+            "test:\n  record_count: 1\n  metadata_keys:\n"
+            "    role:\n      type: string\n      count: 1\n"
+            "    missing:\n      type: string\n      count: 5\n"
+        )
+        (tmp_path / "schema.yaml").write_text(schema_yaml)
+
+        result = run_arkiv("detect", "--strict", str(f))
+        assert result.returncode == 1
+
+    def test_detect_without_schema_unchanged(self, tmp_path):
+        """Without schema.yaml, no schema_info field."""
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        result = run_arkiv("detect", str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert "schema_info" not in data

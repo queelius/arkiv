@@ -1,9 +1,10 @@
-"""Tests for arkiv export (SQLite -> JSONL + manifest)."""
+"""Tests for arkiv export (SQLite -> JSONL + README.md + schema.yaml)."""
 
 import json
 import pytest
 from arkiv.database import Database
-from arkiv.manifest import load_manifest
+from arkiv.readme import parse_readme
+from arkiv.schema import load_schema_yaml
 
 
 class TestExport:
@@ -25,7 +26,7 @@ class TestExport:
         record = json.loads(lines[0])
         assert record["content"] == "hello"
 
-    def test_export_creates_manifest(self, tmp_path):
+    def test_export_creates_readme(self, tmp_path):
         f = tmp_path / "input.jsonl"
         f.write_text('{"content": "a"}\n{"content": "b"}\n')
         db = Database(tmp_path / "test.db")
@@ -34,10 +35,28 @@ class TestExport:
         db.export(out)
         db.close()
 
-        manifest = load_manifest(out / "manifest.json")
-        assert len(manifest.collections) == 1
-        assert manifest.collections[0].file == "data.jsonl"
-        assert manifest.collections[0].record_count == 2
+        assert (out / "README.md").exists()
+        readme = parse_readme(out / "README.md")
+        assert len(readme.frontmatter.get("contents", [])) == 1
+        assert readme.frontmatter["contents"][0]["path"] == "data.jsonl"
+
+    def test_export_creates_schema_yaml(self, tmp_path):
+        f = tmp_path / "input.jsonl"
+        f.write_text(
+            '{"metadata": {"role": "user"}}\n'
+            '{"metadata": {"role": "assistant"}}\n'
+        )
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="data")
+        out = tmp_path / "exported"
+        db.export(out)
+        db.close()
+
+        assert (out / "schema.yaml").exists()
+        schemas = load_schema_yaml(out / "schema.yaml")
+        assert "data" in schemas
+        assert schemas["data"].record_count == 2
+        assert "role" in schemas["data"].metadata_keys
 
     def test_export_multiple_collections(self, tmp_path):
         f1 = tmp_path / "a.jsonl"
@@ -54,8 +73,10 @@ class TestExport:
 
         assert (out / "alpha.jsonl").exists()
         assert (out / "beta.jsonl").exists()
-        manifest = load_manifest(out / "manifest.json")
-        assert len(manifest.collections) == 2
+        readme = parse_readme(out / "README.md")
+        paths = [c["path"] for c in readme.frontmatter.get("contents", [])]
+        assert "alpha.jsonl" in paths
+        assert "beta.jsonl" in paths
 
     def test_roundtrip_lossless(self, tmp_path):
         """Import JSONL -> SQLite -> Export JSONL. Content should be identical."""
@@ -78,3 +99,17 @@ class TestExport:
         assert exported["timestamp"] == "2024-01-15"
         assert exported["metadata"]["role"] == "user"
         assert exported["metadata"]["id"] == 42
+
+    def test_export_no_manifest_json(self, tmp_path):
+        """Export should NOT create manifest.json anymore."""
+        f = tmp_path / "input.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+        out = tmp_path / "exported"
+        db.export(out)
+        db.close()
+
+        assert not (out / "manifest.json").exists()
+        assert (out / "README.md").exists()
+        assert (out / "schema.yaml").exists()

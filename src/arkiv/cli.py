@@ -9,7 +9,7 @@ from . import __version__
 
 
 def cmd_import(args):
-    """Import JSONL or manifest into a SQLite database."""
+    """Import JSONL, README.md, manifest.json, or directory into a SQLite database."""
     from .database import Database
 
     input_path = Path(args.input)
@@ -20,7 +20,24 @@ def cmd_import(args):
 
     db = Database(args.db)
 
-    if input_path.suffix == ".json":
+    if input_path.is_dir():
+        # Directory: look for README.md, fall back to manifest.json
+        readme_path = input_path / "README.md"
+        manifest_path = input_path / "manifest.json"
+        if readme_path.exists():
+            count = db.import_readme(readme_path)
+            print(f"Imported {count} records from README.md")
+        elif manifest_path.exists():
+            count = db.import_manifest(manifest_path)
+            print(f"Imported {count} records from manifest")
+        else:
+            print(f"Error: No README.md or manifest.json found in {input_path}", file=sys.stderr)
+            db.close()
+            sys.exit(1)
+    elif input_path.suffix == ".md":
+        count = db.import_readme(input_path)
+        print(f"Imported {count} records from {input_path.name}")
+    elif input_path.suffix == ".json":
         count = db.import_manifest(input_path)
         print(f"Imported {count} records from manifest")
     else:
@@ -46,7 +63,7 @@ def _require_db(path, command):
 
 
 def cmd_export(args):
-    """Export SQLite database to JSONL files + manifest."""
+    """Export SQLite database to JSONL files + README.md + schema.yaml."""
     from .database import Database
 
     _require_db(args.db, "export")
@@ -184,6 +201,51 @@ def cmd_detect(args):
                 f"Unknown field '{field}' (will be merged into metadata on import)"
             )
 
+    # Schema validation: check sibling schema.yaml if present
+    schema_checks = []
+    schema_yaml_path = input_path.parent / "schema.yaml"
+    if schema_yaml_path.exists():
+        from .schema import load_schema_yaml
+
+        curated = load_schema_yaml(schema_yaml_path)
+        collection = input_path.stem
+        if collection in curated:
+            coll_schema = curated[collection]
+            curated_key_names = set(coll_schema.metadata_keys.keys())
+
+            # Keys in schema.yaml but not in data
+            for key in sorted(curated_key_names - metadata_keys):
+                warnings.append(
+                    f"Schema key '{key}' not found in data"
+                )
+
+            # Keys in data but not in schema.yaml
+            for key in sorted(metadata_keys - curated_key_names):
+                schema_checks.append(
+                    f"Undocumented key '{key}' (in data but not schema.yaml)"
+                )
+
+            # Type mismatch
+            from .schema import discover_schema, _json_type
+            auto_schema = discover_schema(input_path)
+            for key in sorted(curated_key_names & metadata_keys):
+                curated_type = coll_schema.metadata_keys[key].type
+                if key in auto_schema and auto_schema[key].type != curated_type:
+                    warnings.append(
+                        f"Type mismatch for '{key}': schema says {curated_type}, data has {auto_schema[key].type}"
+                    )
+
+                # Curated values not found in data
+                curated_entry = coll_schema.metadata_keys[key]
+                if curated_entry.values and key in auto_schema and auto_schema[key].values:
+                    missing_vals = set(str(v) for v in curated_entry.values) - set(
+                        str(v) for v in auto_schema[key].values
+                    )
+                    if missing_vals:
+                        schema_checks.append(
+                            f"Curated values for '{key}' not in data: {sorted(missing_vals)}"
+                        )
+
     result = {
         "valid_jsonl": errors == 0,
         "total_records": total,
@@ -193,6 +255,8 @@ def cmd_detect(args):
         "metadata_keys": sorted(metadata_keys),
         "warnings": warnings,
     }
+    if schema_checks:
+        result["schema_info"] = schema_checks
     print(json.dumps(result, indent=2))
 
     if args.strict and warnings:
@@ -247,10 +311,7 @@ def cmd_mcp(args):
     """Start the MCP server."""
     from .server import run_mcp_server
 
-    run_mcp_server(
-        db_path=args.db,
-        manifest_path=args.manifest,
-    )
+    run_mcp_server(db_path=args.db)
 
 
 def main():
@@ -265,8 +326,8 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     # import
-    p_import = subparsers.add_parser("import", help="Import JSONL or manifest")
-    p_import.add_argument("input", help="JSONL file or manifest.json")
+    p_import = subparsers.add_parser("import", help="Import JSONL, README.md, or directory")
+    p_import.add_argument("input", help="JSONL file, README.md, manifest.json, or directory")
     p_import.add_argument(
         "--db", default="archive.db", help="SQLite database path"
     )
@@ -274,7 +335,7 @@ def main():
 
     # export
     p_export = subparsers.add_parser(
-        "export", help="Export database to JSONL + manifest"
+        "export", help="Export database to JSONL + README.md + schema.yaml"
     )
     p_export.add_argument("db", help="SQLite database path")
     p_export.add_argument(
@@ -322,7 +383,6 @@ def main():
     # mcp
     p_mcp = subparsers.add_parser("mcp", help="Start MCP server")
     p_mcp.add_argument("db", help="SQLite database path")
-    p_mcp.add_argument("--manifest", help="Manifest JSON path")
     p_mcp.set_defaults(func=cmd_mcp)
 
     args = parser.parse_args()

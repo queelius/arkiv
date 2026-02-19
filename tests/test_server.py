@@ -14,24 +14,23 @@ class TestArkivServer:
             '{"content": "world", "metadata": {"role": "assistant"}}\n'
         )
         from arkiv.database import Database
+        from arkiv.readme import Readme, save_readme
+
+        # Import via README.md with metadata
+        readme = Readme(
+            frontmatter={
+                "name": "Test archive",
+                "description": "Test archive",
+                "contents": [{"path": "test.jsonl", "description": "Test data"}],
+            },
+        )
+        save_readme(readme, tmp_path / "README.md")
 
         db = Database(tmp_path / "test.db")
-        db.import_jsonl(f, collection="conversations")
+        db.import_readme(tmp_path / "README.md")
         db.close()
 
-        # Write manifest
-        from arkiv.manifest import Manifest, Collection, save_manifest
-
-        m = Manifest(
-            description="Test archive",
-            collections=[Collection(file="test.jsonl", record_count=2)],
-        )
-        save_manifest(m, tmp_path / "manifest.json")
-
-        srv = ArkivServer(
-            db_path=tmp_path / "test.db",
-            manifest_path=tmp_path / "manifest.json",
-        )
+        srv = ArkivServer(db_path=tmp_path / "test.db")
         yield srv
         srv.close()
 
@@ -40,14 +39,25 @@ class TestArkivServer:
         assert result["description"] == "Test archive"
         assert len(result["collections"]) == 1
 
+    def test_get_manifest_has_schema(self, server):
+        result = server.get_manifest()
+        coll = result["collections"][0]
+        assert "schema" in coll
+        assert "role" in coll["schema"]["metadata_keys"]
+
+    def test_get_manifest_has_description(self, server):
+        result = server.get_manifest()
+        coll = result["collections"][0]
+        assert coll["description"] == "Test data"
+
     def test_get_schema(self, server):
-        result = server.get_schema("conversations")
+        result = server.get_schema("test")
         assert "metadata_keys" in result
         assert "role" in result["metadata_keys"]
 
     def test_get_schema_all(self, server):
         result = server.get_schema()
-        assert "conversations" in result
+        assert "test" in result
 
     def test_sql_query(self, server):
         results = server.sql_query(
@@ -60,8 +70,8 @@ class TestArkivServer:
         with pytest.raises(ValueError):
             server.sql_query("DELETE FROM records")
 
-    def test_get_manifest_without_manifest_file(self, tmp_path):
-        """When no manifest file exists, generate from DB info."""
+    def test_get_manifest_bare_import(self, tmp_path):
+        """When no README metadata exists, generate from DB info."""
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "hello"}\n')
         from arkiv.database import Database

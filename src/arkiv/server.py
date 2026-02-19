@@ -5,45 +5,54 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .database import Database
-from .manifest import load_manifest
 
 
 class ArkivServer:
-    """Server exposing 3 tools: get_manifest, get_schema, sql_query."""
+    """Server exposing 3 tools: get_manifest, get_schema, sql_query.
 
-    def __init__(
-        self,
-        db_path: Union[str, Path],
-        manifest_path: Optional[Union[str, Path]] = None,
-    ):
+    Derives all metadata from the database — no external manifest needed.
+    """
+
+    def __init__(self, db_path: Union[str, Path]):
         self.db = Database(db_path, read_only=True)
-        self.manifest = None
-        if manifest_path and Path(manifest_path).exists():
-            self.manifest = load_manifest(manifest_path)
 
     def get_manifest(self) -> Dict[str, Any]:
-        """Return manifest with collection descriptions and schemas."""
-        if self.manifest:
-            result = self.manifest.to_dict()
-            # Enrich with schema from DB
-            for coll in result.get("collections", []):
-                name = Path(coll["file"]).stem
-                schema = self.db.get_schema(name)
-                if schema and "metadata_keys" in schema:
-                    coll["schema"] = {"metadata_keys": schema["metadata_keys"]}
-            return result
-        else:
-            # Generate from database info
-            info = self.db.get_info()
-            return {
-                "collections": [
-                    {
-                        "file": f"{name}.jsonl",
-                        "record_count": data["record_count"],
-                    }
-                    for name, data in info["collections"].items()
-                ]
+        """Return archive overview from _metadata + DB info + schema."""
+        result = {}
+
+        # Load README metadata if present
+        readme = self.db._load_readme_metadata()
+        if readme and readme.frontmatter:
+            fm = readme.frontmatter
+            if "name" in fm:
+                result["name"] = fm["name"]
+            if "description" in fm:
+                result["description"] = fm["description"]
+
+        # Build collections from DB
+        info = self.db.get_info()
+        collections = []
+        # Get content descriptions from README frontmatter
+        content_desc = {}
+        if readme and readme.frontmatter:
+            for item in readme.frontmatter.get("contents", []):
+                if isinstance(item, dict) and "path" in item:
+                    content_desc[Path(item["path"]).stem] = item.get("description")
+
+        for name, data in info["collections"].items():
+            coll = {
+                "file": f"{name}.jsonl",
+                "record_count": data["record_count"],
             }
+            if name in content_desc and content_desc[name]:
+                coll["description"] = content_desc[name]
+            schema = self.db.get_schema(name)
+            if schema and "metadata_keys" in schema:
+                coll["schema"] = {"metadata_keys": schema["metadata_keys"]}
+            collections.append(coll)
+
+        result["collections"] = collections
+        return result
 
     def get_schema(self, collection: Optional[str] = None) -> Dict[str, Any]:
         """Return pre-computed metadata schema."""
@@ -57,10 +66,7 @@ class ArkivServer:
         self.db.close()
 
 
-def run_mcp_server(
-    db_path: str,
-    manifest_path: Optional[str] = None,
-):
+def run_mcp_server(db_path: str):
     """Run the arkiv MCP server over stdio."""
     try:
         from mcp.server.fastmcp import FastMCP
@@ -70,7 +76,7 @@ def run_mcp_server(
         )
 
     mcp = FastMCP("arkiv")
-    arkiv = ArkivServer(db_path, manifest_path)
+    arkiv = ArkivServer(db_path)
 
     @mcp.tool()
     def get_manifest() -> str:
