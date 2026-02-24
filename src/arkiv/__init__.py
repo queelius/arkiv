@@ -11,7 +11,6 @@ from .schema import (
     save_schema_yaml,
 )
 from .readme import Readme, parse_readme, save_readme
-from .manifest import Manifest, Collection, load_manifest, save_manifest
 from .database import Database
 
 __all__ = [
@@ -26,9 +25,5 @@ __all__ = [
     "Readme",
     "parse_readme",
     "save_readme",
-    "Manifest",
-    "Collection",
-    "load_manifest",
-    "save_manifest",
     "Database",
 ]
