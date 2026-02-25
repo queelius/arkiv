@@ -389,45 +389,5 @@ class Database:
 
         return total
 
-    def import_manifest(self, manifest_path: Union[str, Path]) -> int:
-        """Import all collections described in a manifest.json.
-
-        Returns total records imported.
-        """
-        from .manifest import load_manifest
-
-        manifest_path = Path(manifest_path)
-        manifest = load_manifest(manifest_path)
-        base_dir = manifest_path.parent
-
-        # Store manifest metadata in _metadata table for export
-        from .readme import Readme
-        frontmatter = {}
-        if manifest.description:
-            frontmatter["description"] = manifest.description
-        if manifest.created:
-            frontmatter["datetime"] = manifest.created
-        if manifest.metadata:
-            frontmatter["metadata"] = manifest.metadata
-        contents = []
-        for coll in manifest.collections:
-            entry = {"path": coll.file}
-            if coll.description:
-                entry["description"] = coll.description
-            contents.append(entry)
-        if contents:
-            frontmatter["contents"] = contents
-        if frontmatter:
-            self._store_readme_metadata(Readme(frontmatter=frontmatter))
-
-        total = 0
-        for coll in manifest.collections:
-            jsonl_path = base_dir / coll.file
-            if jsonl_path.exists():
-                count = self.import_jsonl(jsonl_path, collection=jsonl_path.stem)
-                total += count
-
-        return total
-
     def close(self) -> None:
         self.conn.close()
