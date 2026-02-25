@@ -15,7 +15,7 @@ def cmd_import(args):
     input_path = Path(args.input)
 
     if input_path.suffix == ".db":
-        print(f"Error: {input_path} is a database file, not a JSONL or manifest file", file=sys.stderr)
+        print(f"Error: {input_path} is a database file, not a data file", file=sys.stderr)
         sys.exit(1)
 
     db = Database(args.db)
