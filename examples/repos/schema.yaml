@@ -1,0 +1,41 @@
+# schema.yaml — curated metadata schema for repos archive
+repos:
+  record_count: 5
+  metadata_keys:
+    name:
+      type: string
+      count: 5
+      description: Repository name
+    description:
+      type: string
+      count: 2
+      description: Repository description from README or GitHub
+    language:
+      type: string
+      count: 5
+      values: [C++, Go, JavaScript, Python, R]
+      description: Primary programming language
+    languages:
+      type: array
+      count: 5
+      description: All detected programming languages
+    owner:
+      type: string
+      count: 4
+      description: Repository owner (GitHub username)
+    is_clean:
+      type: boolean
+      count: 5
+      description: Whether the working tree is clean
+    has_ci:
+      type: boolean
+      count: 5
+      description: Whether CI/CD is configured
+    has_readme:
+      type: boolean
+      count: 5
+      description: Whether a README file exists
+    has_license:
+      type: boolean
+      count: 5
+      description: Whether a LICENSE file exists
