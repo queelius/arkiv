@@ -1,6 +1,9 @@
 """End-to-end integration test."""
 
 import json
+import os
+from pathlib import Path
+
 import pytest
 from arkiv import (
     Database,
@@ -108,3 +111,33 @@ class TestEndToEnd:
         # Smoke test: create a record via public API
         r = Record(content="hello", mimetype="text/plain")
         assert r.to_dict() == {"mimetype": "text/plain", "content": "hello"}
+
+    def test_example_archive_roundtrip(self, tmp_path):
+        """The examples/repos/ archive imports and roundtrips cleanly."""
+        example_dir = Path(os.path.dirname(__file__)).parent / "examples" / "repos"
+        assert example_dir.exists(), f"Example archive not found at {example_dir}"
+
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        count = db.import_readme(example_dir / "README.md")
+        assert count == 5
+
+        # Verify schema descriptions survived import
+        schema = db.get_schema("repos")
+        assert "language" in schema["metadata_keys"]
+        assert schema["metadata_keys"]["language"]["description"] == "Primary programming language"
+
+        # Export and verify roundtrip
+        out = tmp_path / "exported"
+        db.export(out)
+        db.close()
+
+        assert (out / "README.md").exists()
+        assert (out / "schema.yaml").exists()
+        assert (out / "repos.jsonl").exists()
+
+        # Re-import exported data
+        db2 = Database(tmp_path / "test2.db")
+        count2 = db2.import_readme(out / "README.md")
+        assert count2 == 5
+        db2.close()
