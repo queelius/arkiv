@@ -9,7 +9,7 @@ from . import __version__
 
 
 def cmd_import(args):
-    """Import JSONL, README.md, manifest.json, or directory into a SQLite database."""
+    """Import JSONL, README.md, or directory into a SQLite database."""
     from .database import Database
 
     input_path = Path(args.input)
@@ -21,25 +21,18 @@ def cmd_import(args):
     db = Database(args.db)
 
     if input_path.is_dir():
-        # Directory: look for README.md, fall back to manifest.json
+        # Directory: look for README.md
         readme_path = input_path / "README.md"
-        manifest_path = input_path / "manifest.json"
         if readme_path.exists():
             count = db.import_readme(readme_path)
             print(f"Imported {count} records from README.md")
-        elif manifest_path.exists():
-            count = db.import_manifest(manifest_path)
-            print(f"Imported {count} records from manifest")
         else:
-            print(f"Error: No README.md or manifest.json found in {input_path}", file=sys.stderr)
+            print(f"Error: No README.md found in {input_path}", file=sys.stderr)
             db.close()
             sys.exit(1)
     elif input_path.suffix == ".md":
         count = db.import_readme(input_path)
         print(f"Imported {count} records from {input_path.name}")
-    elif input_path.suffix == ".json":
-        count = db.import_manifest(input_path)
-        print(f"Imported {count} records from manifest")
     else:
         count = db.import_jsonl(input_path)
         print(f"Imported {count} records from {input_path.name}")
@@ -327,7 +320,7 @@ def main():
 
     # import
     p_import = subparsers.add_parser("import", help="Import JSONL, README.md, or directory")
-    p_import.add_argument("input", help="JSONL file, README.md, manifest.json, or directory")
+    p_import.add_argument("input", help="JSONL file, README.md, or directory")
     p_import.add_argument(
         "--db", default="archive.db", help="SQLite database path"
     )

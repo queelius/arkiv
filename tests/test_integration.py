@@ -88,31 +88,6 @@ class TestEndToEnd:
             == "I think category theory is beautiful"
         )
 
-    def test_manifest_import_still_works(self, tmp_path):
-        """Backwards compat: manifest.json import → export produces README.md."""
-        from arkiv.manifest import Manifest, Collection, save_manifest
-
-        (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
-        m = Manifest(
-            description="Legacy archive",
-            collections=[Collection(file="data.jsonl", description="Data")],
-        )
-        save_manifest(m, tmp_path / "manifest.json")
-
-        db = Database(tmp_path / "archive.db")
-        db.import_manifest(tmp_path / "manifest.json")
-        out = tmp_path / "exported"
-        db.export(out)
-        db.close()
-
-        # Export produces README.md, not manifest.json
-        assert (out / "README.md").exists()
-        assert (out / "schema.yaml").exists()
-        assert not (out / "manifest.json").exists()
-
-        exported_readme = parse_readme(out / "README.md")
-        assert exported_readme.frontmatter["description"] == "Legacy archive"
-
     def test_public_api_imports(self):
         """Verify all public API symbols are importable."""
         from arkiv import (

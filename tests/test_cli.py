@@ -35,16 +35,6 @@ class TestCLI:
         assert result.returncode == 0
         assert db_path.exists()
 
-    def test_import_manifest(self, tmp_path):
-        (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
-        manifest = {"collections": [{"file": "data.jsonl"}]}
-        (tmp_path / "manifest.json").write_text(json.dumps(manifest))
-        db_path = tmp_path / "test.db"
-        result = run_arkiv(
-            "import", str(tmp_path / "manifest.json"), "--db", str(db_path)
-        )
-        assert result.returncode == 0
-
     def test_query(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "hello"}\n')
@@ -300,18 +290,6 @@ class TestCLI:
         assert result.returncode == 0
         assert "1" in result.stdout
 
-    def test_import_directory_fallback_manifest(self, tmp_path):
-        archive_dir = tmp_path / "archive"
-        archive_dir.mkdir()
-        (archive_dir / "data.jsonl").write_text('{"content": "hello"}\n')
-        manifest = {"collections": [{"file": "data.jsonl"}]}
-        (archive_dir / "manifest.json").write_text(json.dumps(manifest))
-        db_path = tmp_path / "test.db"
-        result = run_arkiv(
-            "import", str(archive_dir), "--db", str(db_path)
-        )
-        assert result.returncode == 0
-
     def test_import_empty_directory(self, tmp_path):
         archive_dir = tmp_path / "archive"
         archive_dir.mkdir()
@@ -320,7 +298,7 @@ class TestCLI:
             "import", str(archive_dir), "--db", str(db_path)
         )
         assert result.returncode == 1
-        assert "No README.md or manifest.json" in result.stderr
+        assert "No README.md" in result.stderr
 
     def test_export_preserves_readme_metadata(self, tmp_path):
         (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')

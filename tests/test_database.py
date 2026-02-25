@@ -361,26 +361,6 @@ class TestReadmeMetadata:
         assert schema["metadata_keys"]["role"]["description"] == "Speaker identity"
         db.close()
 
-    def test_import_manifest_stores_as_readme_metadata(self, tmp_path):
-        """Backwards compat: import manifest.json → metadata survives in _metadata."""
-        (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
-        manifest = {
-            "description": "My archive",
-            "created": "2024-06-15",
-            "collections": [
-                {"file": "data.jsonl", "description": "Test data"},
-            ],
-        }
-        (tmp_path / "manifest.json").write_text(json.dumps(manifest))
-
-        db = Database(tmp_path / "test.db")
-        db.import_manifest(tmp_path / "manifest.json")
-
-        loaded = db._load_readme_metadata()
-        assert loaded.frontmatter["description"] == "My archive"
-        assert loaded.frontmatter["datetime"] == "2024-06-15"
-        assert loaded.frontmatter["contents"][0]["description"] == "Test data"
-        db.close()
 
 
 class TestInfo:
