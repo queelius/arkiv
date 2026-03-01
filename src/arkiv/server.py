@@ -22,22 +22,19 @@ class ArkivServer:
 
         # Load README metadata if present
         readme = self.db._load_readme_metadata()
-        if readme and readme.frontmatter:
-            fm = readme.frontmatter
-            if "name" in fm:
-                result["name"] = fm["name"]
-            if "description" in fm:
-                result["description"] = fm["description"]
+        fm = readme.frontmatter if readme else {}
+        if "name" in fm:
+            result["name"] = fm["name"]
+        if "description" in fm:
+            result["description"] = fm["description"]
 
         # Build collections from DB
         info = self.db.get_info()
         collections = []
-        # Get content descriptions from README frontmatter
         content_desc = {}
-        if readme and readme.frontmatter:
-            for item in readme.frontmatter.get("contents", []):
-                if isinstance(item, dict) and "path" in item:
-                    content_desc[Path(item["path"]).stem] = item.get("description")
+        for item in fm.get("contents", []):
+            if isinstance(item, dict) and "path" in item:
+                content_desc[Path(item["path"]).stem] = item.get("description")
 
         for name, data in info["collections"].items():
             coll = {

@@ -19,25 +19,24 @@ def cmd_import(args):
         sys.exit(1)
 
     db = Database(args.db)
-
-    if input_path.is_dir():
-        # Directory: look for README.md
-        readme_path = input_path / "README.md"
-        if readme_path.exists():
-            count = db.import_readme(readme_path)
-            print(f"Imported {count} records from README.md")
+    try:
+        if input_path.is_dir():
+            # Directory: look for README.md
+            readme_path = input_path / "README.md"
+            if readme_path.exists():
+                count = db.import_readme(readme_path)
+                print(f"Imported {count} records from README.md")
+            else:
+                print(f"Error: No README.md found in {input_path}", file=sys.stderr)
+                sys.exit(1)
+        elif input_path.suffix == ".md":
+            count = db.import_readme(input_path)
+            print(f"Imported {count} records from {input_path.name}")
         else:
-            print(f"Error: No README.md found in {input_path}", file=sys.stderr)
-            db.close()
-            sys.exit(1)
-    elif input_path.suffix == ".md":
-        count = db.import_readme(input_path)
-        print(f"Imported {count} records from {input_path.name}")
-    else:
-        count = db.import_jsonl(input_path)
-        print(f"Imported {count} records from {input_path.name}")
-
-    db.close()
+            count = db.import_jsonl(input_path)
+            print(f"Imported {count} records from {input_path.name}")
+    finally:
+        db.close()
 
 
 def _require_db(path, command):
@@ -141,8 +140,6 @@ def _require_jsonl(path, suggestion):
 
 def cmd_detect(args):
     """Check if a JSONL file is valid arkiv format."""
-    import json as json_mod
-
     input_path = Path(args.input)
     _require_jsonl(input_path, "info")
     known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
@@ -164,8 +161,8 @@ def cmd_detect(args):
             if not line:
                 continue
             try:
-                obj = json_mod.loads(line)
-            except json_mod.JSONDecodeError:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
                 warnings.append(f"Line {lineno}: invalid JSON")
                 errors += 1
                 continue
@@ -219,7 +216,7 @@ def cmd_detect(args):
                 )
 
             # Type mismatch
-            from .schema import discover_schema, _json_type
+            from .schema import discover_schema
             auto_schema = discover_schema(input_path)
             for key in sorted(curated_key_names & metadata_keys):
                 curated_type = coll_schema.metadata_keys[key].type
@@ -258,8 +255,6 @@ def cmd_detect(args):
 
 def cmd_fix(args):
     """Fix known field misspellings in a JSONL file."""
-    import json as json_mod
-
     input_path = Path(args.input)
     _require_jsonl(input_path, "info")
     known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
@@ -276,8 +271,8 @@ def cmd_fix(args):
             out_lines.append(line)
             continue
         try:
-            obj = json_mod.loads(stripped)
-        except json_mod.JSONDecodeError:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
             out_lines.append(line)
             continue
         if not isinstance(obj, dict):
@@ -292,7 +287,7 @@ def cmd_fix(args):
                 fixed_count += 1
 
         if changed:
-            out_lines.append(json_mod.dumps(obj, ensure_ascii=False) + "\n")
+            out_lines.append(json.dumps(obj, ensure_ascii=False) + "\n")
         else:
             out_lines.append(line)
 

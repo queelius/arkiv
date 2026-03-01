@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import yaml
+
 from .record import Record, parse_jsonl
 from .schema import SchemaEntry, CollectionSchema, discover_schema, merge_schema
 
@@ -94,21 +96,10 @@ class Database:
         # Pre-compute schema (preserve existing descriptions)
         schema = discover_schema(path)
         existing_desc = self._load_schema_descriptions(collection)
-        self.conn.execute(
-            "DELETE FROM _schema WHERE collection = ?", (collection,)
-        )
         for key, entry in schema.items():
-            sample = (
-                entry.values
-                if entry.values
-                else ([entry.example] if entry.example else [])
-            )
-            desc = existing_desc.get(key)
-            self.conn.execute(
-                "INSERT INTO _schema (collection, key_path, type, count, sample_values, description) VALUES (?, ?, ?, ?, ?, ?)",
-                (collection, key, entry.type, entry.count, json.dumps(sample), desc),
-            )
-        self.conn.commit()
+            if key in existing_desc:
+                entry.description = existing_desc[key]
+        self._save_schema_entries(collection, schema)
 
         return count
 
@@ -122,6 +113,32 @@ class Database:
             return {row[0]: row[1] for row in rows}
         except sqlite3.OperationalError:
             return {}
+
+    def _save_schema_entries(
+        self, collection: str, entries: Dict[str, SchemaEntry]
+    ) -> None:
+        """Replace _schema rows for a collection with the given entries."""
+        self.conn.execute(
+            "DELETE FROM _schema WHERE collection = ?", (collection,)
+        )
+        for key, entry in entries.items():
+            sample = (
+                entry.values
+                if entry.values
+                else ([entry.example] if entry.example else [])
+            )
+            self.conn.execute(
+                "INSERT INTO _schema (collection, key_path, type, count, sample_values, description) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    collection,
+                    key,
+                    entry.type,
+                    entry.count,
+                    json.dumps(sample) if sample else None,
+                    entry.description,
+                ),
+            )
+        self.conn.commit()
 
     def query(self, sql: str) -> List[Dict[str, Any]]:
         """Run a read-only SQL query. Returns list of dicts."""
@@ -203,32 +220,10 @@ class Database:
             )
 
         merged = merge_schema(existing, curated_keys)
-
-        self.conn.execute(
-            "DELETE FROM _schema WHERE collection = ?", (collection,)
-        )
-        for key, entry in merged.items():
-            sample = (
-                entry.values
-                if entry.values
-                else ([entry.example] if entry.example else [])
-            )
-            self.conn.execute(
-                "INSERT INTO _schema (collection, key_path, type, count, sample_values, description) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    collection,
-                    key,
-                    entry.type,
-                    entry.count,
-                    json.dumps(sample) if sample else None,
-                    entry.description,
-                ),
-            )
-        self.conn.commit()
+        self._save_schema_entries(collection, merged)
 
     def _store_readme_metadata(self, readme) -> None:
         """Store README frontmatter and body in _metadata KV table."""
-        import yaml
 
         if readme.frontmatter:
             self.conn.execute(
@@ -249,7 +244,6 @@ class Database:
 
     def _load_readme_metadata(self):
         """Load README data from _metadata table. Returns Readme or None."""
-        import yaml
         from .readme import Readme
 
         try:
