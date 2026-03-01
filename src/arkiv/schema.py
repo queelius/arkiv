@@ -1,6 +1,5 @@
 """Schema discovery for JSONL metadata."""
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -76,9 +75,9 @@ def discover_schema(path: Union[str, Path]) -> Dict[str, SchemaEntry]:
                 key_values[key] = set()
             try:
                 if isinstance(value, (str, int, float, bool)):
-                    key_values[key].add(value)
+                    if key_values[key] is not None:
+                        key_values[key].add(value)
                 else:
-                    # Non-hashable types force high cardinality
                     key_values[key] = None
             except TypeError:
                 key_values[key] = None
