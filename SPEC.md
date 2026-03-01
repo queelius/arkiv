@@ -9,7 +9,7 @@
 arkiv is a universal personal data format. It provides:
 
 1. **A record format** -- one JSON object per record, all fields optional, JSONL canonical storage
-2. **A manifest** -- describes collections of JSONL files with pre-computed schemas
+2. **An archive format** -- README.md + schema.yaml describe collections of JSONL files
 3. **A SQLite query layer** -- import JSONL to SQLite for efficient querying
 4. **An MCP server** -- 3 tools that let any LLM query the data
 
@@ -300,11 +300,11 @@ arkiv provides a generic MCP server with 3 tools that lets any LLM query the dat
 
 #### `get_manifest()`
 
-Returns the manifest with collection descriptions and pre-computed schemas. This is the LLM's first call -- it learns what data is available and what metadata keys can be queried.
+Returns the archive overview with collection descriptions and pre-computed schemas. This is the LLM's first call -- it learns what data is available and what metadata keys can be queried.
 
 **Parameters:** None
 
-**Returns:** The manifest.json content.
+**Returns:** Archive overview derived from README.md metadata, record counts, and schemas.
 
 #### `get_schema(collection?)`
 
@@ -348,11 +348,8 @@ arkiv import conversations.jsonl --db archive.db
 # Import via README.md (reads contents list, merges schema.yaml)
 arkiv import README.md --db archive.db
 
-# Import a directory (auto-detects README.md or manifest.json)
+# Import a directory (auto-detects README.md)
 arkiv import ./archive/ --db archive.db
-
-# Import via legacy manifest.json (backwards compatible)
-arkiv import manifest.json --db archive.db
 
 # Export SQLite back to JSONL files + README.md + schema.yaml
 arkiv export archive.db --output ./exported/
@@ -481,7 +478,7 @@ For the raw data, standard encryption over a compressed archive is the most ECHO
 
 ```bash
 # Compress
-tar czf archive.tar.gz manifest.json *.jsonl media/
+tar czf archive.tar.gz README.md schema.yaml *.jsonl media/
 
 # Encrypt with GPG (universally available, battle-tested)
 gpg --symmetric --cipher-algo AES256 archive.tar.gz
