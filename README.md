@@ -18,7 +18,7 @@ Every record is a JSON object. All fields optional.
 JSONL files (canonical, portable, human-readable)
     ↓ arkiv import
 SQLite database (queryable, efficient, standard SQL)
-    ↓ arkiv serve
+    ↓ arkiv mcp
 MCP server (3 tools → any LLM)
 ```
 
@@ -34,7 +34,7 @@ arkiv import conversations.jsonl --db archive.db
 arkiv query archive.db "SELECT content FROM records WHERE metadata->>'role' = 'user' LIMIT 5"
 
 # Serve to LLMs via MCP
-arkiv serve archive.db
+arkiv mcp archive.db
 ```
 
 ## MCP Tools
@@ -48,7 +48,7 @@ arkiv serve archive.db
 ## Why
 
 - Your data lives in silos (ChatGPT, email, bookmarks, photos, voice memos)
-- Source toolkits (ctk, mtk, btk, ptk, ebk) export it as JSONL
+- Source toolkits (memex, mtk, btk, ptk, ebk) export it as JSONL
 - arkiv gives you one format, one database, one query interface
 - Any LLM can query it via MCP
 - JSONL is human-readable and durable. SQLite is the most deployed database in history.

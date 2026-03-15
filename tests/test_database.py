@@ -217,6 +217,20 @@ class TestQueryGuard:
             db.query("DROP TABLE records")
         db.close()
 
+    def test_comment_injection_blocked(self, tmp_path):
+        """Authorizer blocks write attempts even with SQL comment prefix."""
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+
+        with pytest.raises(ValueError):
+            db.query("SELECT 1; DELETE FROM records")
+        # Verify data is still intact
+        result = db.query("SELECT COUNT(*) as n FROM records")
+        assert result[0]["n"] == 1
+        db.close()
+
 
 class TestSchemaDescription:
     def test_schema_has_description_column(self, tmp_path):

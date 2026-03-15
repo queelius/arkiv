@@ -65,8 +65,10 @@ SQLite tables:
 
 Key behaviors:
 - `import_jsonl()` uses **replace semantics** (deletes existing records for same collection before inserting)
-- `import_jsonl()` preserves existing schema descriptions across reimports
+- `import_jsonl()` preserves existing schema descriptions across reimports via `_load_schema_descriptions()`
 - `import_readme()` parses README.md frontmatter, imports each JSONL from `contents`, merges curated schema from sibling `schema.yaml`
+- `_save_schema_entries()` is the shared helper for writing to `_schema` table (used by both `import_jsonl` and `merge_curated_schema`)
+- `_store_readme_metadata()` / `_load_readme_metadata()` serialize README frontmatter + body to/from `_metadata` KV table
 - `export()` writes JSONL files + README.md + schema.yaml, preserving stored frontmatter metadata
 - `query()` is read-only (SELECT/WITH only)
 
@@ -76,7 +78,7 @@ Key behaviors:
 
 ### CLI (`cli.py`)
 
-Import routing: `.md` → `import_readme()`, directory → looks for `README.md`, everything else → `import_jsonl()`. The CLI uses lazy imports (`from .database import Database` inside functions) to keep startup fast.
+Subcommands: `import`, `export`, `schema`, `query`, `info`, `detect`, `fix`, `mcp`. Import routing: `.md` → `import_readme()`, directory → looks for `README.md`, everything else → `import_jsonl()`. The CLI uses lazy imports (`from .database import Database` inside functions) to keep startup fast.
 
 ### MCP Server (`server.py`)
 

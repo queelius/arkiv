@@ -41,8 +41,8 @@ class TestJsonType:
     def test_dict_type(self):
         assert _json_type({"a": 1}) == "object"
 
-    def test_none_type_falls_back_to_string(self):
-        assert _json_type(None) == "string"
+    def test_none_type(self):
+        assert _json_type(None) == "null"
 
     def test_bool_detected_before_int(self):
         """bool is a subclass of int; must detect boolean first."""
