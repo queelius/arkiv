@@ -60,7 +60,7 @@ def cmd_export(args):
 
     _require_db(args.db, "export")
     db = Database(args.db, read_only=True)
-    db.export(args.output, since=args.since, until=args.until)
+    db.export(args.output, nested=args.nested, since=args.since, until=args.until)
     db.close()
     print(f"Exported to {args.output}")
 
@@ -325,6 +325,7 @@ def main():
     p_export.add_argument(
         "--output", default="./exported", help="Output directory"
     )
+    p_export.add_argument("--nested", action="store_true", help="Create subdirectory per collection")
     p_export.add_argument("--since", help="Include records from this ISO 8601 date")
     p_export.add_argument("--until", help="Include records through this ISO 8601 date")
     p_export.set_defaults(func=cmd_export)

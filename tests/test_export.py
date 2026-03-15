@@ -245,3 +245,131 @@ class TestTemporalSlicing:
         import yaml
         schema = yaml.safe_load((out / "schema.yaml").read_text())
         assert schema["data"]["record_count"] == 3
+
+
+class TestNestedExport:
+    def _make_db(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        f1 = tmp_path / "convos.jsonl"
+        f1.write_text('{"metadata": {"role": "user"}, "content": "hi"}\n')
+        f2 = tmp_path / "books.jsonl"
+        f2.write_text('{"metadata": {"title": "Moby Dick"}, "content": "Call me Ishmael"}\n')
+        db.import_jsonl(f1, collection="convos")
+        db.import_jsonl(f2, collection="books")
+        return db
+
+    def test_nested_creates_subdirectories(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, nested=True)
+        db.close()
+        assert (out / "convos" / "convos.jsonl").exists()
+        assert (out / "books" / "books.jsonl").exists()
+        assert (out / "convos" / "README.md").exists()
+        assert (out / "convos" / "schema.yaml").exists()
+
+    def test_nested_top_readme_has_directory_contents(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, nested=True)
+        db.close()
+        from arkiv.readme import parse_readme
+        readme = parse_readme(out / "README.md")
+        paths = [c["path"] for c in readme.frontmatter["contents"]]
+        assert "convos/" in paths
+        assert "books/" in paths
+
+    def test_nested_per_collection_readme_has_detail_schema(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, nested=True)
+        db.close()
+        readme_text = (out / "convos" / "README.md").read_text()
+        assert "## Metadata Keys" in readme_text
+        assert "role" in readme_text
+
+    def test_nested_per_collection_schema_yaml_single_collection(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, nested=True)
+        db.close()
+        import yaml
+        schema = yaml.safe_load((out / "convos" / "schema.yaml").read_text())
+        assert "convos" in schema
+        assert "books" not in schema
+
+    def test_nested_top_schema_yaml_has_all_collections(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, nested=True)
+        db.close()
+        import yaml
+        schema = yaml.safe_load((out / "schema.yaml").read_text())
+        assert "convos" in schema
+        assert "books" in schema
+
+    def test_nested_per_collection_readme_frontmatter(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, nested=True)
+        db.close()
+        from arkiv.readme import parse_readme
+        readme = parse_readme(out / "convos" / "README.md")
+        assert readme.frontmatter["name"] == "convos"
+        assert readme.frontmatter["record_count"] == 1
+        assert readme.frontmatter["arkiv_format"] == "0.2"
+        assert readme.frontmatter["contents"] == [{"path": "convos.jsonl"}]
+
+    def test_nested_collection_ordering_from_original(self, tmp_path):
+        """Collections appear in order from original README contents."""
+        from arkiv.readme import Readme
+        db = self._make_db(tmp_path)
+        readme = Readme(
+            frontmatter={
+                "name": "Test",
+                "contents": [
+                    {"path": "books.jsonl", "description": "Books"},
+                    {"path": "convos.jsonl", "description": "Convos"},
+                ],
+            },
+        )
+        db._store_readme_metadata(readme)
+        out = tmp_path / "out"
+        db.export(out, nested=True)
+        db.close()
+        from arkiv.readme import parse_readme
+        top = parse_readme(out / "README.md")
+        paths = [c["path"] for c in top.frontmatter["contents"]]
+        assert paths.index("books/") < paths.index("convos/")
+
+    def test_nested_rejects_unsafe_collection_name(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        db.import_jsonl(f, collection="../evil")
+        with pytest.raises(ValueError, match="path separator"):
+            db.export(tmp_path / "out", nested=True)
+        db.close()
+
+    def test_nested_rejects_dot_prefix_name(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        db.import_jsonl(f, collection=".hidden")
+        with pytest.raises(ValueError, match="dot"):
+            db.export(tmp_path / "out", nested=True)
+        db.close()
+
+    def test_nested_composable_with_since(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text(
+            '{"timestamp": "2023-01-01", "content": "old"}\n'
+            '{"timestamp": "2024-06-01", "content": "new"}\n'
+        )
+        db.import_jsonl(f, collection="data")
+        out = tmp_path / "out"
+        db.export(out, nested=True, since="2024-01-01")
+        db.close()
+        lines = (out / "data" / "data.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 1

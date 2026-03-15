@@ -10,6 +10,18 @@ import yaml
 from .record import Record, parse_jsonl
 from .schema import SchemaEntry, CollectionSchema, discover_schema, merge_schema
 
+_UNSAFE_NAMES = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+
+
+def _validate_collection_name(name):
+    """Validate a collection name is safe for use as a directory name."""
+    if "/" in name or "\\" in name:
+        raise ValueError(f"Collection name contains path separator: {name!r}")
+    if name.startswith("."):
+        raise ValueError(f"Collection name starts with dot: {name!r}")
+    if name.lower() in _UNSAFE_NAMES:
+        raise ValueError(f"Collection name is OS-reserved: {name!r}")
+
 
 class Database:
     """SQLite query layer over arkiv records."""
@@ -279,6 +291,7 @@ class Database:
     def export(
         self,
         output_dir: Union[str, Path],
+        nested: bool = False,
         since: Optional[str] = None,
         until: Optional[str] = None,
     ) -> None:
@@ -286,10 +299,14 @@ class Database:
 
         Args:
             output_dir: Directory to write exported files.
+            nested: Create a subdirectory per collection with its own README
+                and schema.yaml.
             since: Include records with timestamp >= this ISO 8601 date.
             until: Include records through this ISO 8601 date.
         """
+        from . import __version__
         from .readme import Readme, save_readme
+        from .render import render_schema_detail, render_schema_summary, inject_schema_block, BEGIN_SENTINEL, END_SENTINEL
         from .schema import CollectionSchema, save_schema_yaml
         from .timefilter import build_time_filter
 
@@ -301,11 +318,33 @@ class Database:
         schemas = {}
         contents = []
 
+        # Get stored README for collection ordering and descriptions
+        stored_readme = self._load_readme_metadata()
+        stored_contents_map = {}
+        stored_order = []
+        if stored_readme:
+            for item in stored_readme.frontmatter.get("contents", []):
+                if isinstance(item, dict) and "path" in item:
+                    stored_contents_map[item["path"]] = item
+                    # Extract collection name from stored path (strip .jsonl or trailing /)
+                    p = item["path"]
+                    if p.endswith(".jsonl"):
+                        stored_order.append(p[:-6])
+                    elif p.endswith("/"):
+                        stored_order.append(p[:-1])
+
         for row in self.conn.execute(
             "SELECT DISTINCT collection FROM records"
         ):
             coll_name = row[0]
-            jsonl_path = output_dir / f"{coll_name}.jsonl"
+
+            if nested:
+                _validate_collection_name(coll_name)
+                coll_dir = output_dir / coll_name
+                coll_dir.mkdir(parents=True, exist_ok=True)
+                jsonl_path = coll_dir / f"{coll_name}.jsonl"
+            else:
+                jsonl_path = output_dir / f"{coll_name}.jsonl"
 
             base_sql = "SELECT mimetype, uri, content, timestamp, metadata FROM records WHERE collection = ?"
             params: list = [coll_name]
@@ -332,6 +371,11 @@ class Database:
             # Skip empty collections after filtering
             if count == 0:
                 jsonl_path.unlink()
+                if nested:
+                    try:
+                        coll_dir.rmdir()
+                    except OSError:
+                        pass
                 continue
 
             # Build collection schema
@@ -355,28 +399,56 @@ class Database:
                     )
                     for key_name, key_info in schema_data.get("metadata_keys", {}).items()
                 }
-            schemas[coll_name] = CollectionSchema(
+            coll_schema = CollectionSchema(
                 record_count=count,
                 metadata_keys=metadata_keys_dict,
             )
+            schemas[coll_name] = coll_schema
 
-            contents.append({"path": f"{coll_name}.jsonl"})
+            if nested:
+                # Write per-collection schema.yaml
+                save_schema_yaml({coll_name: coll_schema}, coll_dir / "schema.yaml")
+
+                # Write per-collection README
+                coll_readme = Readme(
+                    frontmatter={
+                        "name": coll_name,
+                        "record_count": count,
+                        "generator": f"arkiv v{__version__}",
+                        "arkiv_format": "0.2",
+                        "contents": [{"path": f"{coll_name}.jsonl"}],
+                    },
+                )
+                detail_block = render_schema_detail(coll_schema)
+                coll_readme.body = inject_schema_block("", "## Metadata Keys\n\n" + detail_block)
+                save_readme(coll_readme, coll_dir / "README.md")
+
+                contents.append({"path": f"{coll_name}/"})
+            else:
+                contents.append({"path": f"{coll_name}.jsonl"})
+
+        # Apply collection ordering from stored README
+        if stored_order:
+            def _sort_key(item):
+                p = item["path"]
+                name = p.rstrip("/").removesuffix(".jsonl")
+                if name in stored_order:
+                    return (0, stored_order.index(name))
+                return (1, name)
+            contents.sort(key=_sort_key)
 
         # Restore README metadata from _metadata table
-        readme = self._load_readme_metadata()
-        if readme is None:
-            readme = Readme()
+        readme = stored_readme if stored_readme else Readme()
 
         # Ensure contents list in frontmatter reflects actual collections
         # Preserve existing descriptions from stored frontmatter
-        stored_contents = {}
-        for item in readme.frontmatter.get("contents", []):
-            if isinstance(item, dict) and "path" in item:
-                stored_contents[item["path"]] = item
-
         updated_contents = []
         for item in contents:
-            stored = stored_contents.get(item["path"], {})
+            # Look up stored description using both flat and nested path forms
+            coll_name = item["path"].rstrip("/").removesuffix(".jsonl")
+            stored = stored_contents_map.get(f"{coll_name}.jsonl", {})
+            if not stored.get("description"):
+                stored = stored_contents_map.get(f"{coll_name}/", {})
             entry = {"path": item["path"]}
             if "description" in stored:
                 entry["description"] = stored["description"]
@@ -385,7 +457,6 @@ class Database:
         readme.frontmatter["contents"] = updated_contents
         readme.frontmatter["arkiv_format"] = "0.2"
 
-        from .render import render_schema_summary, inject_schema_block, BEGIN_SENTINEL, END_SENTINEL
         raw_table = render_schema_summary(schemas)
         # Build a block with the heading inside sentinels so re-export replaces cleanly
         inner = raw_table[len(BEGIN_SENTINEL) + 1 : -(len(END_SENTINEL) + 1)]
