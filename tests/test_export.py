@@ -113,3 +113,55 @@ class TestExport:
         assert not (out / "manifest.json").exists()
         assert (out / "README.md").exists()
         assert (out / "schema.yaml").exists()
+
+
+class TestSchemaInReadme:
+    def test_export_readme_has_summary_table(self, tmp_path):
+        """Flat export README body contains a collections summary table."""
+        from arkiv.render import BEGIN_SENTINEL, END_SENTINEL
+
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n{"metadata": {"role": "admin"}}\n')
+        db.import_jsonl(f, collection="data")
+        out = tmp_path / "out"
+        db.export(out)
+        db.close()
+        readme_text = (out / "README.md").read_text()
+        assert BEGIN_SENTINEL in readme_text
+        assert END_SENTINEL in readme_text
+        assert "| data |" in readme_text
+        assert "## Collections" in readme_text
+
+    def test_export_preserves_user_prose(self, tmp_path):
+        """User-written body text outside sentinels survives re-export."""
+        from arkiv.render import BEGIN_SENTINEL
+        from arkiv.readme import Readme
+
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        db.import_jsonl(f, collection="data")
+        readme = Readme(
+            frontmatter={"name": "Test", "contents": [{"path": "data.jsonl"}]},
+            body="My custom prose.\n",
+        )
+        db._store_readme_metadata(readme)
+        out = tmp_path / "out"
+        db.export(out)
+        db.close()
+        readme_text = (out / "README.md").read_text()
+        assert "My custom prose." in readme_text
+        assert BEGIN_SENTINEL in readme_text
+
+    def test_export_sets_arkiv_format(self, tmp_path):
+        """Exported README has arkiv_format: '0.2' in frontmatter."""
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        db.import_jsonl(f, collection="data")
+        out = tmp_path / "out"
+        db.export(out)
+        db.close()
+        readme = parse_readme(out / "README.md")
+        assert readme.frontmatter.get("arkiv_format") == "0.2"

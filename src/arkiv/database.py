@@ -350,6 +350,15 @@ class Database:
             updated_contents.append(entry)
 
         readme.frontmatter["contents"] = updated_contents
+        readme.frontmatter["arkiv_format"] = "0.2"
+
+        from .render import render_schema_summary, inject_schema_block, BEGIN_SENTINEL, END_SENTINEL
+        raw_table = render_schema_summary(schemas)
+        # Build a block with the heading inside sentinels so re-export replaces cleanly
+        inner = raw_table[len(BEGIN_SENTINEL) + 1 : -(len(END_SENTINEL) + 1)]
+        summary = BEGIN_SENTINEL + "\n## Collections\n\n" + inner + END_SENTINEL + "\n"
+        readme.body = inject_schema_block(readme.body, summary)
+
         save_readme(readme, output_dir / "README.md")
 
         # Write schema.yaml
