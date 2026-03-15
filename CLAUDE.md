@@ -70,7 +70,8 @@ Key behaviors:
 - `_save_schema_entries()` is the shared helper for writing to `_schema` table (used by both `import_jsonl` and `merge_curated_schema`)
 - `_store_readme_metadata()` / `_load_readme_metadata()` serialize README frontmatter + body to/from `_metadata` KV table
 - `export()` writes JSONL files + README.md + schema.yaml, preserving stored frontmatter metadata
-- `query()` is read-only (SELECT/WITH only)
+- `get_readme()` is the public accessor for stored README metadata
+- `query()` is read-only (SELECT/WITH prefix check + sqlite3 authorizer)
 
 ### README / Archive Identity (`readme.py`)
 

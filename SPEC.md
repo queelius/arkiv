@@ -1,83 +1,79 @@
 # arkiv: Universal Record Format
 
-**Version:** 0.1 (Draft Specification)
+**Format Version:** 0.2
+**Specification Status:** Draft
 
 ---
 
 ## Purpose
 
-arkiv is a universal personal data format. It provides:
+arkiv is a universal personal data format. It defines:
 
-1. **A record format** -- one JSON object per record, all fields optional, JSONL canonical storage
-2. **An archive format** -- README.md + schema.yaml describe collections of JSONL files
-3. **A SQLite query layer** -- import JSONL to SQLite for efficient querying
-4. **An MCP server** -- 3 tools that let any LLM query the data
+1. **A record format** -- one JSON object per line, all fields optional, JSONL storage
+2. **An archive format** -- a directory with README.md, schema.yaml, and JSONL files
+3. **A schema convention** -- auto-discovered data dictionary with optional curation
 
-arkiv is not specific to any application. It is a general-purpose format for personal data sovereignty, archival, and interchange. Applications like persona generation (longshade), analytics, or knowledge management build on top of it.
+arkiv also provides a reference implementation with a SQLite query layer, CLI, and MCP server. These are described separately in [Part 3](#part-3-reference-implementation) and are not required to produce or consume arkiv archives.
+
+arkiv is not specific to any application. It is a general-purpose format for personal data sovereignty, archival, and interchange.
 
 ---
 
 ## Design Principles
 
 1. **Permissive input, best-effort processing.** Any valid JSON object is a valid record. Accept everything, preserve everything, process what you can.
-2. **JSONL is canonical.** JSONL files are the durable, portable, human-readable source of truth. SQLite is a derived view for efficient querying.
-3. **Standards over conventions.** MIME types (not custom type enums), URIs (not custom path formats), ISO 8601 (not custom date formats).
-4. **Document-oriented, not relational.** Each record is a self-contained resource with context. Denormalize at export time from relational sources.
+2. **The archive directory is canonical.** The JSONL files, README.md, and schema.yaml together are the durable, portable source of truth. SQLite is a derived view.
+3. **Standards over conventions.** MIME types (not custom type enums), URIs (not custom path formats), ISO 8601 (not custom date formats), SQL (not a custom query language).
+4. **Document-oriented, not relational.** Each record is a self-contained resource. Denormalize at export time from relational sources.
 5. **No required fields.** The format imposes no schema. Metadata is freeform JSON. Applications decide what fields they need.
 
 ---
 
-## Universal Record Format
+# Part 1: The Format
 
-Each line in a JSONL file is one record. A record is a JSON object with these conventional fields:
+This section fully specifies the arkiv format. It is sufficient to produce and consume arkiv archives without the reference implementation or any specific programming language.
+
+## 1.1 Record Format
+
+Each line in a JSONL file is one record. A record is a JSON object with these conventional top-level fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `mimetype` | string | Standard MIME type (`text/plain`, `audio/wav`, `image/jpeg`, etc.) |
 | `uri` | string | URI reference (`file://`, `http://`, `s3://`, `data:`, etc.) |
-| `content` | string | Inline content (text for text types, base64 for binary) |
+| `content` | string | Inline text content |
 | `timestamp` | string | ISO 8601 datetime |
-| `metadata` | object | Freeform JSON -- everything else |
+| `metadata` | object | Freeform JSON -- everything domain-specific |
 
-**All fields are optional.** A record with only `metadata` is valid. A record with only `content` is valid. An empty object `{}` is valid (but useless).
+**All fields are optional.** A record with only `metadata` is valid. A record with only `content` is valid. An empty object `{}` is valid.
 
-### Invariant: One record = one resource = one mimetype
+These five fields are the **known fields**. Any other top-level key is an **unknown field** -- implementations SHOULD merge unknown fields into `metadata` on import, preserving the original data while normalizing the structure.
 
-The `mimetype` field describes the resource. If both `content` and `uri` are present, they refer to the same resource -- `content` is the resource inlined, `uri` is where it lives. Derived representations (e.g., a transcript of an audio file) belong in `metadata`, not as a second mimetype.
+### Content encoding
+
+The `content` field holds inline text. It is always a UTF-8 string. arkiv does not specify a convention for binary content encoding; use `uri` to reference binary resources instead.
+
+### Invariant: one record = one resource = one mimetype
+
+If both `content` and `uri` are present, they refer to the same resource -- `content` is the resource inlined, `uri` is where it lives. Derived representations (e.g., a transcript of an audio file) belong in `metadata`, not as a second record or second mimetype.
+
+### Error handling
+
+Lines that are not valid JSON SHOULD be silently skipped. JSON values that are not objects (arrays, strings, numbers) SHOULD be silently skipped. Implementations MUST NOT fail on malformed input -- best-effort processing is a design principle.
 
 ### Examples
 
-**Text (conversation message):**
+**Conversation message:**
 ```jsonl
-{"mimetype": "text/plain", "uri": "https://chatgpt.com/c/abc123", "content": "I think the key insight is that category theory gives you a language for talking about structure without getting lost in details.", "timestamp": "2023-05-14T10:30:00Z", "metadata": {"conversation_id": "abc123", "role": "user", "source": "chatgpt"}}
+{"mimetype": "text/plain", "uri": "https://chatgpt.com/c/abc123", "content": "I think the key insight is that category theory gives you a language for talking about structure.", "timestamp": "2023-05-14T10:30:00Z", "metadata": {"conversation_id": "abc123", "role": "user", "source": "chatgpt"}}
 ```
 
-**Text (blog post):**
+**Audio with transcript in metadata:**
 ```jsonl
-{"mimetype": "text/markdown", "uri": "https://myblog.com/on-durability", "content": "# Why I Care About Durability\n\nWhen I think about what matters...", "timestamp": "2019-03-22", "metadata": {"title": "On Durability", "tags": ["philosophy", "archiving"]}}
+{"mimetype": "audio/wav", "uri": "file://media/podcast-001.wav", "timestamp": "2024-01-15", "metadata": {"transcript": "Welcome to today's discussion...", "duration": 45.2}}
 ```
 
-**Audio (with transcript in metadata):**
-```jsonl
-{"mimetype": "audio/wav", "uri": "file://media/podcast-001.wav", "timestamp": "2024-01-15", "metadata": {"transcript": "Welcome to today's discussion about formal methods...", "duration": 45.2, "context": "podcast interview"}}
-```
-
-**Image:**
-```jsonl
-{"mimetype": "image/jpeg", "uri": "file://media/conference-talk.jpg", "timestamp": "2024-01-15", "metadata": {"caption": "Giving my talk on category theory at MIT", "location": "MIT", "people": ["self"]}}
-```
-
-**Video (remote URL):**
-```jsonl
-{"mimetype": "video/mp4", "uri": "https://youtube.com/watch?v=abc123", "timestamp": "2023-06-10", "metadata": {"title": "My conference talk on formal methods", "transcript": "Today I want to talk about..."}}
-```
-
-**Structured data (bookmark):**
-```jsonl
-{"mimetype": "application/json", "uri": "https://arxiv.org/abs/2301.00001", "timestamp": "2024-01-15", "metadata": {"annotation": "Great paper on type-theoretic approaches to databases", "tags": ["math", "databases"]}}
-```
-
-**Bare metadata (a fact about the person):**
+**Bare metadata (a fact):**
 ```jsonl
 {"metadata": {"relationship": "married to Sarah", "since": "2005"}}
 ```
@@ -89,47 +85,75 @@ The `mimetype` field describes the resource. If both `content` and `uri` are pre
 
 ---
 
-## README.md (Archive Self-Description)
+## 1.2 Archive Structure
 
-Every arkiv archive has a `README.md` with YAML frontmatter. This makes archives ECHO-compliant (self-describing) and human-readable.
+An arkiv archive is a directory:
 
-```yaml
+```
+archive/
+├── README.md           # Archive identity (YAML frontmatter + markdown body)
+├── schema.yaml         # Data dictionary (auto-generated, hand-curatable)
+├── conversations.jsonl # Collection: one JSONL file per logical group
+├── bookmarks.jsonl     # Collection
+├── media/              # Referenced files (audio, images, video)
+│   ├── podcast-001.wav
+│   └── photo.jpg
+└── archive.db          # Optional: SQLite derived view (regenerable)
+```
+
+**The source of truth is the archive directory** -- specifically the JSONL files, README.md, and schema.yaml. The SQLite database is derived and can always be regenerated from these files.
+
+Each `.jsonl` file is a **collection**. The collection name is the filename stem (e.g., `conversations.jsonl` → collection `conversations`).
+
+---
+
+## 1.3 README.md (Archive Identity)
+
+Every arkiv archive SHOULD have a `README.md` with YAML frontmatter. This makes archives self-describing and human-readable.
+
+```markdown
 ---
 name: Alex's personal data archive
-description: ChatGPT and Claude conversations, bookmarks, writings, and voice memos
+description: Conversations, bookmarks, and writings
 datetime: 2026-02-16
-generator: arkiv v0.1.0
+generator: arkiv v0.2.0
+arkiv_format: "0.2"
 contents:
   - path: conversations.jsonl
     description: ChatGPT and Claude conversations 2022-2025
-  - path: writings.jsonl
-    description: Blog posts and essays 2015-2025
-  - path: voice.jsonl
-    description: Podcast recordings and voice memos
+  - path: bookmarks.jsonl
+    description: Browser bookmarks and annotations
 ---
 
 # Alex's Personal Data Archive
 
-This archive contains personal data from various AI assistants and tools...
+This archive contains personal data exported from various tools...
 ```
 
-### Frontmatter Fields (by convention)
+### Frontmatter fields (by convention)
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Human-readable name of the archive |
 | `description` | string | Brief description |
-| `datetime` | string | ISO 8601 date of creation |
-| `generator` | string | Tool that created this archive |
-| `contents` | array | List of collection entries (path + optional description) |
+| `datetime` | string | ISO 8601 date of creation or last update |
+| `generator` | string | Tool and version that created this archive |
+| `arkiv_format` | string | Format version (e.g., `"0.2"`) |
+| `contents` | array | List of `{path, description}` entries for each collection |
 
-All keys are optional. Unknown keys are preserved on roundtrip.
+All keys are optional. Unknown keys MUST be preserved on roundtrip. The `contents` entries control which JSONL files are part of the archive and their ordering.
+
+### Name resolution cascade
+
+If `name` is not in frontmatter, implementations SHOULD fall back to the first `# Heading` in the body, then the directory name.
+
+If `description` is not in frontmatter, implementations SHOULD fall back to the first paragraph of the body.
 
 ---
 
-## schema.yaml (Metadata Schema)
+## 1.4 schema.yaml (Data Dictionary)
 
-A `schema.yaml` sits alongside the JSONL files and describes the metadata structure. It is auto-generated by `arkiv export` but can be hand-edited to add descriptions and curate values.
+A `schema.yaml` sits alongside the JSONL files and describes the metadata structure of each collection. It is a **data dictionary** -- a summary of observed metadata keys, not a validation schema. It cannot enforce types or reject records.
 
 ```yaml
 # Auto-generated by arkiv. Edit freely.
@@ -144,105 +168,139 @@ conversations:
     conversation_id:
       type: string
       count: 12847
+      example: "abc-123"
     source:
       description: "Which AI assistant"
       type: string
       count: 12847
       values: [chatgpt, claude]
-writings:
-  record_count: 134
-  metadata_keys:
-    title:
-      type: string
-      count: 134
-    tags:
-      type: array
-      count: 120
 ```
 
-### Merge-on-Import
-
-When `arkiv import` processes a README.md with a sibling `schema.yaml`:
-
-| Field | Behavior |
-|-------|----------|
-| `type` | Always recomputed from data (live) |
-| `count` | Always recomputed from data (live) |
-| `description` | Preserved from schema.yaml (stable) |
-| `values` | From schema.yaml if curated, else auto-computed (stable) |
-
-Keys in schema.yaml but not in data are preserved with `count=0`.
-
----
-
-## Schema Discovery
-
-Schema discovery scans a JSONL file's records and produces a summary of all metadata keys, their types, frequency, and example values.
-
-```json
-{
-  "metadata_keys": {
-    "role": {
-      "type": "string",
-      "count": 12847,
-      "values": ["user", "assistant"]
-    },
-    "conversation_id": {
-      "type": "string",
-      "count": 12847,
-      "example": "abc-123"
-    },
-    "topic": {
-      "type": "string",
-      "count": 8432,
-      "example": "category theory"
-    }
-  }
-}
-```
-
-### Schema Entry Fields
+### Schema entry fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | JSON type: string, number, boolean, array, object |
-| `count` | integer | How many records have this key |
-| `values` | array | Enumerated values (if cardinality is low, e.g. < 20) |
-| `example` | any | One example value (if cardinality is high) |
-| `description` | string | Human-curated description (from schema.yaml) |
+| `type` | string | JSON type (see [type vocabulary](#type-vocabulary)) |
+| `count` | integer | How many records have this metadata key |
+| `values` | array | Enumerated values (for low-cardinality keys, threshold ≤ 20) |
+| `example` | any | One example value (for high-cardinality keys, when `values` is absent) |
+| `description` | string | Human-curated description |
 
-Schema is pre-computed during JSONL-to-SQLite import and stored in the `_schema` table. It is also written into `schema.yaml` on export.
+The `values` and `example` fields are mutually exclusive in auto-generated schemas: low-cardinality keys get `values`, high-cardinality keys get `example`. Both may coexist in hand-edited schema.yaml.
+
+### Type vocabulary
+
+The `type` field uses standard JSON type names:
+
+| Type | JSON values |
+|------|-------------|
+| `string` | `"hello"` |
+| `number` | `42`, `3.14` |
+| `boolean` | `true`, `false` |
+| `array` | `[1, 2, 3]` |
+| `object` | `{"key": "value"}` |
+| `null` | `null` |
+
+If a metadata key has mixed types across records, the type of the first occurrence is used.
+
+### Merge-on-import semantics
+
+When an implementation imports a README.md with a sibling `schema.yaml`, the two sources are merged:
+
+| Field | Source | Behavior |
+|-------|--------|----------|
+| `type` | Data | Always recomputed from JSONL records |
+| `count` | Data | Always recomputed from JSONL records |
+| `description` | schema.yaml | Preserved across reimports |
+| `values` | schema.yaml if present, else data | Curated values override auto-computed |
+| `example` | Data | Recomputed from JSONL records |
+
+Keys present in schema.yaml but not in the data are preserved with `count: 0`. This allows schema.yaml to document keys that may appear in future data.
 
 ---
 
-## SQLite Query Layer
+## 1.5 Unknown Fields and Extensibility
 
-JSONL files can be imported into SQLite for efficient querying. The SQLite file is a derived view -- it can always be regenerated from the canonical JSONL.
+arkiv is designed for forwards compatibility:
 
-### Schema
+- **Records:** Unknown top-level keys are merged into `metadata`. No data is lost.
+- **README frontmatter:** Unknown keys are preserved on roundtrip. Implementations MUST NOT strip unrecognized frontmatter.
+- **schema.yaml:** Unknown fields within entries are ignored but preserved if possible.
+
+### Format versioning
+
+The `arkiv_format` field in README frontmatter identifies which version of this specification the archive conforms to. Implementations SHOULD include it on export. Implementations SHOULD accept archives without it (treating them as format version 0.1).
+
+If the known fields set (`mimetype`, `uri`, `content`, `timestamp`, `metadata`) changes in a future version, the format version will increment.
+
+---
+
+# Part 2: Schema Discovery Algorithm
+
+This section specifies the algorithm for auto-generating schema entries from JSONL data. Implementations that produce schema.yaml SHOULD follow this algorithm for interoperability.
+
+## 2.1 Scanning
+
+For each record in the JSONL file:
+1. Extract the `metadata` object (skip records without metadata)
+2. For each key-value pair in metadata:
+   - Increment the count for this key
+   - Record the JSON type of the value (using the [type vocabulary](#type-vocabulary))
+   - Track unique values for enumeration (see below)
+
+## 2.2 Value enumeration
+
+For each metadata key, track its unique values:
+- **Scalar values** (string, number, boolean): add to the set of unique values
+- **Non-scalar values** (array, object, null): stop tracking values for this key; use `example` instead
+- **Mixed types**: if a key has both scalar and non-scalar values across records, stop tracking
+
+If the number of unique values exceeds **20** (the enumeration threshold), stop tracking and use `example` instead.
+
+When values are tracked: if all values are strings, sort them lexicographically. Otherwise, list them in arbitrary order.
+
+When values are not tracked: record the first observed value as `example`.
+
+## 2.3 Result
+
+For each metadata key, produce a `SchemaEntry`:
+- `type`: the JSON type of the first observed value
+- `count`: number of records containing this key
+- `values`: sorted array of unique values (if cardinality ≤ 20 and all scalar), else absent
+- `example`: first observed value (if `values` is absent), else absent
+
+---
+
+# Part 3: Reference Implementation
+
+This section describes the arkiv Python reference implementation. It is informative, not normative -- other implementations may use different storage, query mechanisms, or interfaces.
+
+## 3.1 SQLite Schema
+
+The reference implementation imports archives into SQLite with three tables:
 
 ```sql
 CREATE TABLE records (
     id INTEGER PRIMARY KEY,
-    collection TEXT,        -- which JSONL file this came from
+    collection TEXT,        -- JSONL filename stem
     mimetype TEXT,
     uri TEXT,
     content TEXT,
     timestamp TEXT,
-    metadata JSON
+    metadata JSON           -- original metadata as JSON string
 );
 
 CREATE TABLE _schema (
     collection TEXT,
-    key_path TEXT,          -- metadata key name
-    type TEXT,              -- string, number, boolean, array, object
+    key_path TEXT,           -- metadata key name
+    type TEXT,               -- JSON type name
     count INTEGER,
-    sample_values TEXT,     -- JSON array of example or enumerated values
-    description TEXT        -- human-curated description (from schema.yaml)
+    sample_values TEXT,      -- JSON array (values or [example])
+    description TEXT         -- from schema.yaml
 );
 
 CREATE TABLE _metadata (
-    key TEXT PRIMARY KEY,   -- readme_frontmatter, readme_body
+    key TEXT PRIMARY KEY,
     value TEXT
 );
 
@@ -251,147 +309,159 @@ CREATE INDEX idx_records_mimetype ON records(mimetype);
 CREATE INDEX idx_records_timestamp ON records(timestamp);
 ```
 
-### Querying Metadata
+The `_metadata` table stores README data as key-value pairs:
+- `readme_frontmatter`: YAML-serialized frontmatter dict
+- `readme_body`: markdown body text
 
-SQLite's JSON1 extension provides operators for querying JSON fields:
+The `_schema` table stores the merged schema (auto-discovered + curated). The `sample_values` column holds either the enumerated `values` array or a single-element array containing `example`.
 
-```sql
--- Find all user messages about math
-SELECT content, timestamp
-FROM records
-WHERE collection = 'conversations'
-  AND metadata->>'role' = 'user'
-  AND metadata->>'topic' LIKE '%math%'
-ORDER BY timestamp DESC
-LIMIT 10;
+### Import semantics
 
--- Count records by source
-SELECT metadata->>'source' AS source, COUNT(*) AS n
-FROM records
-WHERE collection = 'conversations'
-GROUP BY source;
+- `import_jsonl(path, collection)`: Deletes existing records for the collection (**replace semantics**), then inserts all records from the JSONL file. Pre-computes schema, preserving existing descriptions.
+- `import_readme(path)`: Parses README frontmatter, imports each JSONL from `contents`, merges curated schema from sibling schema.yaml, stores README metadata.
+- Unknown top-level fields in records are merged into the `metadata` JSON column.
 
--- Find all audio with transcripts
-SELECT uri, metadata->>'transcript' AS transcript, metadata->>'duration' AS duration
-FROM records
-WHERE mimetype LIKE 'audio/%'
-  AND metadata->>'transcript' IS NOT NULL;
+### Export semantics
 
--- Full-text search across all content
-SELECT content, mimetype, timestamp
-FROM records
-WHERE content LIKE '%category theory%';
-```
+- Writes one JSONL file per collection
+- Writes README.md from stored `_metadata`
+- Writes schema.yaml from `_schema` table
+- Roundtrip is lossless: import → export produces equivalent files
 
-### Import/Export Roundtrip
+### Query safety
 
-The import and export are lossless:
+The `query()` method enforces read-only access:
+1. Prefix check: rejects queries not starting with `SELECT` or `WITH`
+2. SQLite authorizer: allows only `SQLITE_SELECT`, `SQLITE_READ`, and `SQLITE_FUNCTION` operations at the engine level
 
-- **Import:** Each JSONL record becomes one row in `records`. The `collection` column records which file it came from. Schema is pre-computed into `_schema`. README metadata is stored in `_metadata`.
-- **Export:** Each row becomes one JSONL record. Rows are grouped by `collection` into separate files. Schema is written to `schema.yaml`. README is written from `_metadata`.
+Both layers are applied. The authorizer prevents bypass via SQL comments, semicolons, or CTEs containing write operations.
 
----
+## 3.2 MCP Server
 
-## MCP Server
-
-arkiv provides a generic MCP server with 3 tools that lets any LLM query the data.
-
-### Tools
+The reference implementation includes an MCP server (requires `pip install arkiv[mcp]`) that exposes three tools over **stdio** transport:
 
 #### `get_manifest()`
 
-Returns the archive overview with collection descriptions and pre-computed schemas. This is the LLM's first call -- it learns what data is available and what metadata keys can be queried.
+Returns the archive overview: name, description (from README), collection list with record counts, descriptions, and metadata schemas.
 
 **Parameters:** None
-
-**Returns:** Archive overview derived from README.md metadata, record counts, and schemas.
+**Returns:** JSON object with `name`, `description` (if present), and `collections` array.
 
 #### `get_schema(collection?)`
 
-Returns the pre-computed metadata schema for one or all collections. This tells the LLM what metadata keys exist, their types, and example values -- so it can write informed SQL queries.
+Returns the data dictionary for one or all collections.
 
-**Parameters:**
-- `collection` (optional, string): Filter to a specific collection. If omitted, returns schema for all collections.
-
-**Returns:** Schema object with metadata keys, types, counts, and example values.
+**Parameters:** `collection` (optional string)
+**Returns:** JSON object with `record_count` and `metadata_keys` mapping.
 
 #### `sql_query(query)`
 
-Runs a read-only SQL query against the SQLite database.
+Runs a read-only SQL query. Use `metadata->>'key'` or `json_extract(metadata, '$.key')` to query metadata fields.
 
-**Parameters:**
-- `query` (string): SQL SELECT statement
+**Parameters:** `query` (string, SELECT only)
+**Returns:** JSON array of row objects.
 
-**Returns:** Query results as JSON array of objects.
-
-### Usage Pattern
+### Usage pattern
 
 ```
 LLM: get_manifest()
-  → Learns: 3 collections (conversations, writings, voice), their descriptions, metadata keys
+  → Learns: 3 collections, their descriptions, metadata keys
 
 LLM: get_schema("conversations")
-  → Learns: metadata has role (user/assistant), conversation_id, topic, source (chatgpt/claude)
+  → Learns: metadata has role (user/assistant), conversation_id, source (chatgpt/claude)
 
-LLM: sql_query("SELECT content FROM records WHERE collection='conversations' AND metadata->>'role'='user' AND content LIKE '%durability%' LIMIT 5")
-  → Gets: actual conversation content about durability
+LLM: sql_query("SELECT content FROM records WHERE collection='conversations' AND metadata->>'role'='user' LIMIT 5")
+  → Gets: actual conversation content
 ```
 
----
-
-## CLI
+## 3.3 CLI
 
 ```bash
-# Import a single JSONL file to SQLite
-arkiv import conversations.jsonl --db archive.db
+pip install arkiv
 
-# Import via README.md (reads contents list, merges schema.yaml)
-arkiv import README.md --db archive.db
+# Import
+arkiv import conversations.jsonl --db archive.db     # single JSONL file
+arkiv import README.md --db archive.db               # via README (imports contents, merges schema)
+arkiv import ./archive/ --db archive.db              # directory (auto-detects README.md)
 
-# Import a directory (auto-detects README.md)
-arkiv import ./archive/ --db archive.db
+# Export
+arkiv export archive.db --output ./exported/         # JSONL + README.md + schema.yaml
 
-# Export SQLite back to JSONL files + README.md + schema.yaml
-arkiv export archive.db --output ./exported/
+# Query and inspect
+arkiv query archive.db "SELECT ..."                  # SQL query
+arkiv schema conversations.jsonl                     # print auto-discovered schema
+arkiv info archive.db                                # collection counts and overview
 
-# Discover/print schema of a JSONL file
-arkiv schema conversations.jsonl
+# Validation and repair
+arkiv detect conversations.jsonl                     # check arkiv format compliance
+arkiv detect conversations.jsonl --strict            # exit 1 on any warnings
+arkiv fix conversations.jsonl                        # fix known field misspellings (e.g., url → uri)
 
-# Run a SQL query against a database
-arkiv query archive.db "SELECT content FROM records WHERE metadata->>'role' = 'user' LIMIT 5"
-
-# Validate a JSONL file (optionally against sibling schema.yaml)
-arkiv detect conversations.jsonl
-
-# Start MCP server
-arkiv mcp archive.db
-
-# Show database info (collections, record counts, etc.)
-arkiv info archive.db
+# MCP server
+arkiv mcp archive.db                                 # start MCP server (stdio transport)
 ```
 
 ---
 
-## Directory Structure
+# Part 4: Ecosystem
 
-An arkiv archive on disk:
+## Relationship to ECHO
+
+ECHO is a philosophy and compliance standard for durable personal archives, validated by [longecho](https://github.com/queelius/longecho). Its core requirements: self-describing (README), durable formats, graceful degradation, local-first.
+
+arkiv is independent of ECHO but naturally ECHO-compliant:
+
+- **README.md** satisfies ECHO's self-description requirement
+- **JSONL** is a durable format (plain text, human-readable, no special tools needed)
+- **SQLite** is a durable format (Library of Congress recommended archival format)
+- **Two degradation layers**: SQLite for rich queries, JSONL for `cat`/`grep`/text editors
+
+An arkiv archive with a README is automatically ECHO-compliant.
+
+## Toolkit Output Convention
+
+Source toolkits that produce arkiv archives SHOULD export as:
 
 ```
-archive/
-├── README.md               # ECHO self-description (YAML frontmatter + markdown)
-├── schema.yaml             # Structured metadata schema (auto-generated, curatable)
-├── conversations.jsonl     # One collection
-├── writings.jsonl          # Another collection
-├── bookmarks.jsonl         # Another collection
-├── voice.jsonl             # Another collection
-├── media/                  # Referenced files (audio, images, video)
-│   ├── podcast-001.wav
-│   ├── conference.jpg
-│   └── ...
-└── archive.db              # SQLite (derived, regenerable from JSONL)
+toolkit-export/
+├── README.md           # Self-describing (YAML frontmatter)
+├── schema.yaml         # Data dictionary (curatable)
+├── collection.jsonl    # Universal record format (human-readable, durable)
+└── collection.db       # Optional: SQLite query layer (regenerable)
 ```
 
-The JSONL files, README.md, and schema.yaml are the source of truth. The SQLite file is derived and can be regenerated at any time via `arkiv import ./archive/ --db archive.db`.
+## Related Projects
+
+### Input sources (toolkit ecosystem)
+
+- **memex** -- Conversations (ChatGPT, Claude, etc.)
+- **mtk** -- Email
+- **btk** -- Bookmarks
+- **ptk** -- Photos
+- **ebk** -- Ebooks and reading notes
+- **repoindex** -- Git repositories
+- **chartfold** -- Health data
+
+### Consumers
+
+- **longshade** -- Packages arkiv data as a conversable persona
+- **Any analytics/visualization tool** -- Query the SQLite directly
+- **Any LLM** -- Via MCP server
+
+### Compliance
+
+- **longecho** -- ECHO compliance validator
+
+## Privacy and Encryption
+
+arkiv archives contain personal data. Standard encryption over a compressed archive is the recommended approach:
+
+```bash
+tar czf archive.tar.gz README.md schema.yaml *.jsonl media/
+gpg --symmetric --cipher-algo AES256 archive.tar.gz    # or: age -p archive.tar.gz > archive.tar.gz.age
+```
+
+This preserves the full degradation chain: decrypt → decompress → plaintext JSONL.
 
 ---
 
@@ -401,144 +471,40 @@ The JSONL files, README.md, and schema.yaml are the source of truth. The SQLite 
 
 - Human-readable in a text editor
 - `cat`, `grep`, `wc -l` just work
-- Append-only: independent sources produce JSONL files, you `cat` them together
-- Git-diffable
-- Streaming-friendly (one record per line)
-- No binary format to decode
+- Append-only: independent sources produce JSONL, you `cat` them together
+- Git-diffable, streaming-friendly (one record per line)
 
-### Why SQLite as query layer?
+### Why SQLite as derived layer?
 
 - Most deployed database engine in history
 - Single file, no server
 - Library of Congress recommends it as an archival format
 - JSON1 extension provides native JSON querying
-- Full-text search via FTS5
-- Standard SQL interface
 
 ### Why all fields optional?
 
 - Different sources produce different shapes of data
-- Longshade shouldn't reject valid personal data because it doesn't fit a schema
 - Processing is best-effort: use what's available, ignore what's missing
 - The metadata field absorbs all domain-specific structure
 
-### Why MIME types instead of custom types?
+### Why a data dictionary, not a validation schema?
 
-- Well-maintained standard covering every content type
-- Already understood by every tool and system
-- New content types get MIME types automatically
-- More durable than any custom enum we'd define
+The schema.yaml is a data dictionary -- it describes what has been observed, augmented with human-authored descriptions. It does not validate, enforce types, or reject records. This is deliberate:
 
-### Why `uri`?
+- Personal data is messy; rigid schemas reject valid data
+- The two-tier merge (auto + curated) keeps the dictionary fresh without losing human curation
+- LLMs need to know what fields exist and what they mean, not enforce constraints
+- JSON Schema-level complexity would be overkill for the use case
 
-- `file://` for local files
-- `http://`/`https://` for web resources
-- `s3://` for cloud storage
-- Any URI scheme works, current or future
-- Provides provenance: where did this data originally live?
+### Why README as identity?
 
-### Why document-oriented, not relational?
-
-Personal data is naturally document-shaped. A conversation message, a photograph, a bookmark, a voice recording -- these are self-contained artifacts with context. Forcing them into normalized tables loses the natural structure. If importing from a relational database, denormalize at export time.
-
----
-
-## Relationship to ECHO
-
-ECHO is a philosophy and compliance standard for durable personal archives. Its core requirements: self-describing (README), durable formats, graceful degradation, local-first.
-
-arkiv is independent of ECHO but naturally ECHO-compliant:
-
-- **README.md** satisfies ECHO's self-description requirement
-- **JSONL** is a durable format (plain text, human-readable, no special tools needed)
-- **SQLite** is a durable format (Library of Congress recommended archival format)
-- **Two degradation layers** built in: SQLite for rich queries, JSONL for `cat`/`grep`/text editors
-
-arkiv does not claim to be ECHO's recommended format. ECHO is format-agnostic by design. But an arkiv archive with a README is automatically ECHO-compliant.
-
-### Toolkit Output Convention
-
-Source toolkits (memex, btk, ebk, ptk, mtk, repoindex, chartfold, etc.) can export as arkiv archives with ECHO compliance:
-
-```
-memex-export/
-├── README.md              # ECHO compliant (self-describing, YAML frontmatter)
-├── schema.yaml            # Structured metadata schema (curatable)
-├── conversations.jsonl    # arkiv universal format (human-readable, durable)
-└── conversations.db       # arkiv SQLite (queryable, durable)
-```
-
-This gives each export two degradation layers and full self-description, with no extra effort from the toolkit.
-
-### Privacy and Encryption
-
-arkiv archives contain personal data that may require access control. **pagevault** provides encrypted, password-protected viewing of static content with an embedded self-contained viewer.
-
-For the raw data, standard encryption over a compressed archive is the most ECHO-compliant approach:
-
-```bash
-# Compress
-tar czf archive.tar.gz README.md schema.yaml *.jsonl media/
-
-# Encrypt with GPG (universally available, battle-tested)
-gpg --symmetric --cipher-algo AES256 archive.tar.gz
-
-# Or age (modern, simpler)
-age -p archive.tar.gz > archive.tar.gz.age
-```
-
-This preserves the full degradation chain: decrypt → decompress → plaintext JSONL and SQLite. The encryption tool is separate from the data, widely available, and open-source.
-
-For a *browsable* layer with authentication (e.g., sharing with family via a browser), **pagevault** provides encrypted viewing with an embedded self-contained viewer. Tradeoff: pagevault requires HTML + CSS + JavaScript, which is less ECHO-compliant than plaintext. But it's useful when you want access control without requiring recipients to use GPG.
-
-The pragmatic choice: standard encryption (GPG/age) for the data archive, pagevault for the browsable interface when needed.
-
----
-
-## Relationship to Other Projects
-
-### Input Sources (Toolkit Ecosystem)
-
-Source toolkits export data in arkiv's universal record format:
-
-- **memex** -- Conversations (ChatGPT, Claude, etc.) → JSONL + SQLite
-- **mtk** -- Email → JSONL + SQLite
-- **btk** -- Bookmarks → JSONL + SQLite
-- **ptk** -- Photos → JSONL + SQLite
-- **ebk** -- Ebooks, reading notes → JSONL + SQLite
-- **repoindex** -- Git repositories and code → JSONL + SQLite
-- **chartfold** -- Health data → JSONL + SQLite
-- **mf/Hugo** -- Blog posts, writings (mf is a Hugo tool; Markdown content is naturally compatible)
-
-### Applications
-
-- **longshade** -- Packages arkiv data as a conversable persona (system prompt + voice samples + data)
-- **Any analytics/visualization tool** -- Query the SQLite directly
-- **Any LLM** -- Via MCP server
-
-### Privacy
-
-- **pagevault** -- Encrypted viewing with embedded self-contained viewer. Wraps arkiv archives for password-protected access.
-
-### Compliance
-
-- **longecho** -- ECHO compliance validator. arkiv archives are naturally ECHO-compliant.
-
----
-
-## Tech Stack
-
-- Python 3.8+
-- `sqlite3` (stdlib)
-- `json` (stdlib)
-- MCP Python SDK (for MCP server)
-- No heavy dependencies
+A README.md with YAML frontmatter is simultaneously human-readable documentation, machine-parseable metadata, Git-friendly, and universally understood. Compared to a dedicated manifest.json or package.json, it degrades gracefully -- drop an arkiv directory on any file browser and the README explains what you're looking at.
 
 ---
 
 ## Future Considerations
 
-- **FTS5 full-text search index** -- Could be pre-built during import for faster text search
-- **Embedding column** -- Optional vector embeddings in the SQLite for semantic search (if needed)
-- **Watch mode** -- Monitor JSONL files for changes and auto-update SQLite
-- **Streaming import** -- Handle very large JSONL files without loading into memory
+- **FTS5 full-text search** -- Pre-built during import for faster text search
+- **Vector embeddings** -- Optional embedding column for semantic search
+- **Hierarchical archives** -- Subdirectories with their own README.md + schema.yaml
+- **Watch mode** -- Monitor JSONL files for changes, auto-update SQLite
