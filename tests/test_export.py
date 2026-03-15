@@ -165,3 +165,83 @@ class TestSchemaInReadme:
         db.close()
         readme = parse_readme(out / "README.md")
         assert readme.frontmatter.get("arkiv_format") == "0.2"
+
+
+class TestTemporalSlicing:
+    def _make_db(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text(
+            '{"timestamp": "2023-06-01", "content": "old"}\n'
+            '{"timestamp": "2024-03-15", "content": "mid"}\n'
+            '{"timestamp": "2024-12-31T10:30:00Z", "content": "late"}\n'
+            '{"content": "no timestamp"}\n'
+        )
+        db.import_jsonl(f, collection="data")
+        return db
+
+    def test_since_filters_old_records(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, since="2024-01-01")
+        db.close()
+        lines = (out / "data.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 3  # mid + late + no-timestamp
+
+    def test_until_includes_full_timestamp(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, until="2024-12-31")
+        db.close()
+        lines = (out / "data.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 4  # all records (2024-12-31T10:30:00Z < 2025-01-01)
+
+    def test_null_timestamps_always_pass(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, since="2099-01-01")
+        db.close()
+        lines = (out / "data.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 1  # only the null-timestamp record
+
+    def test_empty_collection_excluded(self, tmp_path):
+        """Collection with zero records after filtering is omitted entirely."""
+        db = Database(tmp_path / "test.db")
+        f1 = tmp_path / "old.jsonl"
+        f1.write_text('{"timestamp": "2020-01-01", "content": "ancient"}\n')
+        f2 = tmp_path / "new.jsonl"
+        f2.write_text('{"timestamp": "2024-06-01", "content": "recent"}\n')
+        db.import_jsonl(f1, collection="old")
+        db.import_jsonl(f2, collection="new")
+        out = tmp_path / "out"
+        db.export(out, since="2024-01-01")
+        db.close()
+        assert not (out / "old.jsonl").exists()
+        readme = parse_readme(out / "README.md")
+        paths = [c["path"] for c in readme.frontmatter.get("contents", [])]
+        assert "old.jsonl" not in paths
+        assert "new.jsonl" in paths
+
+    def test_until_excludes_future(self, tmp_path):
+        """--until 2024 should exclude records from 2025."""
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text(
+            '{"timestamp": "2024-06-01", "content": "in"}\n'
+            '{"timestamp": "2025-01-01", "content": "out"}\n'
+        )
+        db.import_jsonl(f, collection="data")
+        out = tmp_path / "out"
+        db.export(out, until="2024")
+        db.close()
+        lines = (out / "data.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 1
+
+    def test_slice_schema_reflects_filtered_data(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "out"
+        db.export(out, since="2024-01-01")
+        db.close()
+        import yaml
+        schema = yaml.safe_load((out / "schema.yaml").read_text())
+        assert schema["data"]["record_count"] == 3

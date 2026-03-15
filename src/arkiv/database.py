@@ -276,13 +276,27 @@ class Database:
             body=meta.get("readme_body", ""),
         )
 
-    def export(self, output_dir: Union[str, Path]) -> None:
-        """Export database to JSONL files + README.md + schema.yaml."""
+    def export(
+        self,
+        output_dir: Union[str, Path],
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+    ) -> None:
+        """Export database to JSONL files + README.md + schema.yaml.
+
+        Args:
+            output_dir: Directory to write exported files.
+            since: Include records with timestamp >= this ISO 8601 date.
+            until: Include records through this ISO 8601 date.
+        """
         from .readme import Readme, save_readme
         from .schema import CollectionSchema, save_schema_yaml
+        from .timefilter import build_time_filter
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        time_clause, time_params = build_time_filter(since, until)
 
         schemas = {}
         contents = []
@@ -293,12 +307,16 @@ class Database:
             coll_name = row[0]
             jsonl_path = output_dir / f"{coll_name}.jsonl"
 
+            base_sql = "SELECT mimetype, uri, content, timestamp, metadata FROM records WHERE collection = ?"
+            params: list = [coll_name]
+            if time_clause:
+                base_sql += f" AND {time_clause}"
+                params.extend(time_params)
+            base_sql += " ORDER BY id"
+
             count = 0
             with open(jsonl_path, "w", encoding="utf-8") as f:
-                for rec_row in self.conn.execute(
-                    "SELECT mimetype, uri, content, timestamp, metadata FROM records WHERE collection = ? ORDER BY id",
-                    (coll_name,),
-                ):
+                for rec_row in self.conn.execute(base_sql, params):
                     record = Record(
                         mimetype=rec_row[0],
                         uri=rec_row[1],
@@ -311,20 +329,35 @@ class Database:
                     f.write(record.to_json() + "\n")
                     count += 1
 
+            # Skip empty collections after filtering
+            if count == 0:
+                jsonl_path.unlink()
+                continue
+
             # Build collection schema
-            schema_data = self.get_schema(coll_name)
-            metadata_keys = {
-                key_name: SchemaEntry(
-                    type=key_info["type"],
-                    count=key_info["count"],
-                    values=key_info.get("values") or None,
-                    description=key_info.get("description"),
-                )
-                for key_name, key_info in schema_data.get("metadata_keys", {}).items()
-            }
+            if since or until:
+                # Two-pass: recompute schema from the filtered JSONL
+                auto_schema = discover_schema(jsonl_path)
+                descs = self._load_schema_descriptions(coll_name)
+                for key, entry in auto_schema.items():
+                    if key in descs:
+                        entry.description = descs[key]
+                metadata_keys_dict = auto_schema
+            else:
+                # Existing behavior: read from _schema table
+                schema_data = self.get_schema(coll_name)
+                metadata_keys_dict = {
+                    key_name: SchemaEntry(
+                        type=key_info["type"],
+                        count=key_info["count"],
+                        values=key_info.get("values") or None,
+                        description=key_info.get("description"),
+                    )
+                    for key_name, key_info in schema_data.get("metadata_keys", {}).items()
+                }
             schemas[coll_name] = CollectionSchema(
                 record_count=count,
-                metadata_keys=metadata_keys,
+                metadata_keys=metadata_keys_dict,
             )
 
             contents.append({"path": f"{coll_name}.jsonl"})
