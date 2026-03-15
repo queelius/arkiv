@@ -140,9 +140,10 @@ def _require_jsonl(path, suggestion):
 
 def cmd_detect(args):
     """Check if a JSONL file is valid arkiv format."""
+    from .record import KNOWN_FIELDS
+
     input_path = Path(args.input)
     _require_jsonl(input_path, "info")
-    known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
     field_suggestions = {
         "url": "uri", "link": "uri", "href": "uri",
         "type": "mimetype", "mime": "mimetype",
@@ -173,7 +174,7 @@ def cmd_detect(args):
 
             total += 1
             for key in obj:
-                if key in known_fields:
+                if key in KNOWN_FIELDS:
                     fields_used.add(key)
                 else:
                     unknown_fields.add(key)
@@ -195,7 +196,7 @@ def cmd_detect(args):
     schema_checks = []
     schema_yaml_path = input_path.parent / "schema.yaml"
     if schema_yaml_path.exists():
-        from .schema import load_schema_yaml
+        from .schema import discover_schema, load_schema_yaml
 
         curated = load_schema_yaml(schema_yaml_path)
         collection = input_path.stem
@@ -215,18 +216,15 @@ def cmd_detect(args):
                     f"Undocumented key '{key}' (in data but not schema.yaml)"
                 )
 
-            # Type mismatch
-            from .schema import discover_schema
+            # Type and value mismatches
             auto_schema = discover_schema(input_path)
             for key in sorted(curated_key_names & metadata_keys):
-                curated_type = coll_schema.metadata_keys[key].type
-                if key in auto_schema and auto_schema[key].type != curated_type:
+                curated_entry = coll_schema.metadata_keys[key]
+                if key in auto_schema and auto_schema[key].type != curated_entry.type:
                     warnings.append(
-                        f"Type mismatch for '{key}': schema says {curated_type}, data has {auto_schema[key].type}"
+                        f"Type mismatch for '{key}': schema says {curated_entry.type}, data has {auto_schema[key].type}"
                     )
 
-                # Curated values not found in data
-                curated_entry = coll_schema.metadata_keys[key]
                 if curated_entry.values and key in auto_schema and auto_schema[key].values:
                     missing_vals = set(str(v) for v in curated_entry.values) - set(
                         str(v) for v in auto_schema[key].values
@@ -257,8 +255,6 @@ def cmd_fix(args):
     """Fix known field misspellings in a JSONL file."""
     input_path = Path(args.input)
     _require_jsonl(input_path, "info")
-    known_fields = {"mimetype", "uri", "content", "timestamp", "metadata"}
-    # Unambiguous fixes: unknown field -> arkiv field to duplicate into
     fix_map = {"url": "uri", "link": "uri", "href": "uri"}
 
     lines = input_path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -380,10 +376,7 @@ def main():
 
     try:
         args.func(args)
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except ValueError as e:
+    except (FileNotFoundError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     except UnicodeDecodeError:

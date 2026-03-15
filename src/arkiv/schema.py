@@ -41,6 +41,8 @@ class CollectionSchema:
 
 
 def _json_type(value: Any) -> str:
+    if value is None:
+        return "null"
     if isinstance(value, bool):
         return "boolean"
     if isinstance(value, (int, float)):
@@ -71,27 +73,28 @@ def discover_schema(path: Union[str, Path]) -> Dict[str, SchemaEntry]:
             if key not in key_example:
                 key_example[key] = value
 
+            # Track enumerable values; set to None for non-scalar types
             if key not in key_values:
                 key_values[key] = set()
-            try:
-                if isinstance(value, (str, int, float, bool)):
-                    if key_values[key] is not None:
-                        key_values[key].add(value)
-                else:
-                    key_values[key] = None
-            except TypeError:
+            if key_values[key] is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                key_values[key].add(value)
+            else:
                 key_values[key] = None
 
     result = {}
     for key in key_counts:
         values_set = key_values.get(key)
         if values_set is not None and len(values_set) <= MAX_ENUM_VALUES:
+            if all(isinstance(v, str) for v in values_set):
+                values = sorted(str(v) for v in values_set)
+            else:
+                values = list(values_set)
             entry = SchemaEntry(
                 type=key_types[key],
                 count=key_counts[key],
-                values=sorted(str(v) for v in values_set)
-                if all(isinstance(v, str) for v in values_set)
-                else list(values_set),
+                values=values,
             )
         else:
             entry = SchemaEntry(
@@ -127,6 +130,7 @@ def load_schema_yaml(path: Union[str, Path]) -> Dict[str, CollectionSchema]:
                 type=key_data.get("type", "string"),
                 count=key_data.get("count", 0),
                 values=key_data.get("values"),
+                example=key_data.get("example"),
                 description=key_data.get("description"),
             )
         result[coll_name] = CollectionSchema(
@@ -156,6 +160,8 @@ def save_schema_yaml(
             key_dict["count"] = entry.count
             if entry.values is not None:
                 key_dict["values"] = entry.values
+            if entry.example is not None:
+                key_dict["example"] = entry.example
             coll_dict["metadata_keys"][key_name] = key_dict
         data[coll_name] = coll_dict
 
@@ -177,7 +183,7 @@ def merge_schema(
 
     Live fields (type, count) come from auto.
     Stable fields (description, values if curated) come from curated.
-    Keys in curated but not in auto are preserved with count=0, type=None.
+    Keys in curated but not in auto are preserved with count=0.
     """
     result = {}
 

@@ -122,11 +122,7 @@ class Database:
             "DELETE FROM _schema WHERE collection = ?", (collection,)
         )
         for key, entry in entries.items():
-            sample = (
-                entry.values
-                if entry.values
-                else ([entry.example] if entry.example else [])
-            )
+            sample = entry.values or ([entry.example] if entry.example else [])
             self.conn.execute(
                 "INSERT INTO _schema (collection, key_path, type, count, sample_values, description) VALUES (?, ?, ?, ?, ?, ?)",
                 (
@@ -140,24 +136,35 @@ class Database:
             )
         self.conn.commit()
 
+    @staticmethod
+    def _read_only_authorizer(action, *_args):
+        """SQLite authorizer that allows only read operations."""
+        allowed = {
+            sqlite3.SQLITE_SELECT,
+            sqlite3.SQLITE_READ,
+            sqlite3.SQLITE_FUNCTION,
+        }
+        return sqlite3.SQLITE_OK if action in allowed else sqlite3.SQLITE_DENY
+
     def query(self, sql: str) -> List[Dict[str, Any]]:
         """Run a read-only SQL query. Returns list of dicts."""
         normalized = sql.strip().upper()
-        if not normalized.startswith("SELECT") and not normalized.startswith(
-            "WITH"
-        ):
+        if not normalized.startswith(("SELECT", "WITH")):
             raise ValueError("Only SELECT queries are allowed")
 
+        self.conn.set_authorizer(self._read_only_authorizer)
         try:
             cursor = self.conn.execute(sql)
-        except sqlite3.OperationalError as e:
+
+            if cursor.description is None:
+                raise ValueError("Only SELECT queries are allowed")
+
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
             raise ValueError(str(e)) from None
-
-        if cursor.description is None:
-            raise ValueError("Only SELECT queries are allowed")
-
-        columns = [desc[0] for desc in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        finally:
+            self.conn.set_authorizer(None)
 
     def get_info(self) -> Dict[str, Any]:
         """Get database info: total records, collections, counts."""
@@ -170,6 +177,10 @@ class Database:
             collections[row[0]] = {"record_count": row[1]}
 
         return {"total_records": total, "collections": collections}
+
+    def get_readme(self) -> Optional["Readme"]:
+        """Get stored README metadata, or None if not present."""
+        return self._load_readme_metadata()
 
     def get_schema(self, collection: Optional[str] = None) -> Dict[str, Any]:
         """Get pre-computed schema for one or all collections."""
@@ -222,12 +233,12 @@ class Database:
         merged = merge_schema(existing, curated_keys)
         self._save_schema_entries(collection, merged)
 
-    def _store_readme_metadata(self, readme) -> None:
+    def _store_readme_metadata(self, readme: "Readme") -> None:
         """Store README frontmatter and body in _metadata KV table."""
-
+        upsert = "INSERT OR REPLACE INTO _metadata (key, value) VALUES (?, ?)"
         if readme.frontmatter:
             self.conn.execute(
-                "INSERT OR REPLACE INTO _metadata (key, value) VALUES (?, ?)",
+                upsert,
                 ("readme_frontmatter", yaml.dump(
                     readme.frontmatter,
                     default_flow_style=False,
@@ -236,13 +247,10 @@ class Database:
                 )),
             )
         if readme.body:
-            self.conn.execute(
-                "INSERT OR REPLACE INTO _metadata (key, value) VALUES (?, ?)",
-                ("readme_body", readme.body),
-            )
+            self.conn.execute(upsert, ("readme_body", readme.body))
         self.conn.commit()
 
-    def _load_readme_metadata(self):
+    def _load_readme_metadata(self) -> Optional["Readme"]:
         """Load README data from _metadata table. Returns Readme or None."""
         from .readme import Readme
 
@@ -305,14 +313,15 @@ class Database:
 
             # Build collection schema
             schema_data = self.get_schema(coll_name)
-            metadata_keys = {}
-            for key_name, key_info in schema_data.get("metadata_keys", {}).items():
-                metadata_keys[key_name] = SchemaEntry(
+            metadata_keys = {
+                key_name: SchemaEntry(
                     type=key_info["type"],
                     count=key_info["count"],
                     values=key_info.get("values") or None,
                     description=key_info.get("description"),
                 )
+                for key_name, key_info in schema_data.get("metadata_keys", {}).items()
+            }
             schemas[coll_name] = CollectionSchema(
                 record_count=count,
                 metadata_keys=metadata_keys,

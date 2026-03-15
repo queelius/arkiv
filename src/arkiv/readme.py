@@ -3,7 +3,7 @@
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Tuple, Union
 
 
 @dataclass
@@ -18,7 +18,7 @@ class Readme:
     body: str = ""
 
 
-def split_frontmatter(text: str) -> tuple:
+def split_frontmatter(text: str) -> Tuple[str, str]:
     """Split text into (frontmatter_str, body_str).
 
     Frontmatter is delimited by --- on its own line at the start.
@@ -50,11 +50,8 @@ def parse_readme(path: Union[str, Path]) -> Readme:
     text = path.read_text(encoding="utf-8")
     fm_str, body = split_frontmatter(text)
 
-    if fm_str:
-        frontmatter = yaml.safe_load(fm_str)
-        if not isinstance(frontmatter, dict):
-            frontmatter = {}
-    else:
+    frontmatter = yaml.safe_load(fm_str) if fm_str else {}
+    if not isinstance(frontmatter, dict):
         frontmatter = {}
 
     return Readme(frontmatter=frontmatter, body=body)

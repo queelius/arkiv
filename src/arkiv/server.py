@@ -18,15 +18,9 @@ class ArkivServer:
 
     def get_manifest(self) -> Dict[str, Any]:
         """Return archive overview from _metadata + DB info + schema."""
-        result = {}
-
-        # Load README metadata if present
-        readme = self.db._load_readme_metadata()
+        readme = self.db.get_readme()
         fm = readme.frontmatter if readme else {}
-        if "name" in fm:
-            result["name"] = fm["name"]
-        if "description" in fm:
-            result["description"] = fm["description"]
+        result = {k: fm[k] for k in ("name", "description") if k in fm}
 
         # Build collections from DB
         info = self.db.get_info()
@@ -63,7 +57,7 @@ class ArkivServer:
         self.db.close()
 
 
-def run_mcp_server(db_path: str):
+def run_mcp_server(db_path: str) -> None:
     """Run the arkiv MCP server over stdio."""
     try:
         from mcp.server.fastmcp import FastMCP

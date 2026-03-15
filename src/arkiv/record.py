@@ -1,7 +1,7 @@
 """Universal record format."""
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Union
 
@@ -24,18 +24,11 @@ class Record:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict, excluding None fields."""
-        d = {}
-        if self.mimetype is not None:
-            d["mimetype"] = self.mimetype
-        if self.uri is not None:
-            d["uri"] = self.uri
-        if self.content is not None:
-            d["content"] = self.content
-        if self.timestamp is not None:
-            d["timestamp"] = self.timestamp
-        if self.metadata is not None:
-            d["metadata"] = self.metadata
-        return d
+        return {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if getattr(self, f.name) is not None
+        }
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
@@ -48,25 +41,19 @@ def parse_record(data: Dict[str, Any]) -> Record:
     Known fields (mimetype, uri, content, timestamp, metadata) are
     extracted. Unknown fields are merged into metadata.
     """
-    metadata = data.get("metadata")
-    if metadata is not None:
-        metadata = dict(metadata)
-    else:
-        metadata = None
+    metadata = dict(data["metadata"]) if "metadata" in data else None
 
     # Collect unknown fields into metadata
     unknown = {k: v for k, v in data.items() if k not in KNOWN_FIELDS}
     if unknown:
-        if metadata is None:
-            metadata = {}
-        metadata.update(unknown)
+        metadata = {**(metadata or {}), **unknown}
 
     return Record(
         mimetype=data.get("mimetype"),
         uri=data.get("uri"),
         content=data.get("content"),
         timestamp=data.get("timestamp"),
-        metadata=metadata if metadata else None,
+        metadata=metadata or None,
     )
 
 
