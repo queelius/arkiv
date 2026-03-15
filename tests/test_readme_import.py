@@ -150,3 +150,66 @@ class TestReadmeImport:
             c["path"]: c for c in exported_readme.frontmatter.get("contents", [])
         }
         assert coll_by_path["data.jsonl"]["description"] == "Test data"
+
+
+class TestNestedImport:
+    def test_import_nested_archive(self, tmp_path):
+        """Import a nested archive (directory entries in contents)."""
+        (tmp_path / "convos").mkdir()
+        (tmp_path / "convos" / "convos.jsonl").write_text(
+            '{"content": "hello", "metadata": {"role": "user"}}\n'
+        )
+        (tmp_path / "convos" / "README.md").write_text(
+            "---\nname: convos\ncontents:\n- path: convos.jsonl\n---\n"
+        )
+        (tmp_path / "README.md").write_text(
+            "---\nname: Test\ncontents:\n- path: convos/\n---\n"
+        )
+        db = Database(tmp_path / "test.db")
+        count = db.import_readme(tmp_path / "README.md")
+        assert count == 1
+        result = db.query("SELECT content FROM records WHERE collection = 'convos'")
+        assert len(result) == 1
+        assert result[0]["content"] == "hello"
+        # Only top-level README stored
+        readme = db.get_readme()
+        assert readme.frontmatter["name"] == "Test"
+        db.close()
+
+    def test_roundtrip_nested_export_import(self, tmp_path):
+        """Database -> nested export -> import -> database is lossless."""
+        db1 = Database(tmp_path / "db1.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hello", "metadata": {"x": 1}}\n')
+        db1.import_jsonl(f, collection="data")
+        out = tmp_path / "out"
+        db1.export(out, nested=True)
+        db1.close()
+        # Import from nested export
+        db2 = Database(tmp_path / "db2.db")
+        db2.import_readme(out / "README.md")
+        result = db2.query("SELECT content FROM records WHERE collection = 'data'")
+        assert len(result) == 1
+        assert result[0]["content"] == "hello"
+        db2.close()
+
+    def test_nested_import_merges_per_collection_schema(self, tmp_path):
+        """Per-collection schema.yaml descriptions are merged on nested import."""
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "data.jsonl").write_text(
+            '{"metadata": {"role": "user"}}\n'
+        )
+        (tmp_path / "data" / "schema.yaml").write_text(
+            "data:\n  record_count: 1\n  metadata_keys:\n    role:\n      type: string\n      count: 1\n      description: Speaker identity\n"
+        )
+        (tmp_path / "data" / "README.md").write_text(
+            "---\nname: data\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        (tmp_path / "README.md").write_text(
+            "---\nname: Test\ncontents:\n- path: data/\n---\n"
+        )
+        db = Database(tmp_path / "test.db")
+        db.import_readme(tmp_path / "README.md")
+        schema = db.get_schema("data")
+        assert schema["metadata_keys"]["role"]["description"] == "Speaker identity"
+        db.close()

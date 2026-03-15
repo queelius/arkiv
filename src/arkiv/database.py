@@ -491,12 +491,43 @@ class Database:
         for item in readme.frontmatter.get("contents", []):
             if not isinstance(item, dict) or "path" not in item:
                 continue
-            jsonl_path = base_dir / item["path"]
-            if jsonl_path.exists():
-                count = self.import_jsonl(jsonl_path, collection=jsonl_path.stem)
+            entry_path = base_dir / item["path"]
+            if entry_path.is_dir():
+                sub_readme = entry_path / "README.md"
+                if sub_readme.exists():
+                    total += self._import_nested_readme(sub_readme)
+            elif entry_path.suffix == ".jsonl" and entry_path.exists():
+                count = self.import_jsonl(entry_path, collection=entry_path.stem)
                 total += count
 
         # Merge curated schema if schema.yaml exists
+        schema_yaml_path = base_dir / "schema.yaml"
+        if schema_yaml_path.exists():
+            curated = load_schema_yaml(schema_yaml_path)
+            for coll_name, coll_schema in curated.items():
+                self.merge_curated_schema(coll_name, coll_schema.metadata_keys)
+
+        return total
+
+    def _import_nested_readme(self, readme_path: Union[str, Path]) -> int:
+        """Import contents of a nested README without storing its metadata."""
+        from .readme import parse_readme
+        from .schema import load_schema_yaml
+
+        readme_path = Path(readme_path)
+        sub_readme = parse_readme(readme_path)
+        base_dir = readme_path.parent
+        total = 0
+
+        for item in sub_readme.frontmatter.get("contents", []):
+            if not isinstance(item, dict) or "path" not in item:
+                continue
+            entry_path = base_dir / item["path"]
+            if entry_path.suffix == ".jsonl" and entry_path.exists():
+                count = self.import_jsonl(entry_path, collection=entry_path.stem)
+                total += count
+
+        # Merge per-collection schema.yaml if present
         schema_yaml_path = base_dir / "schema.yaml"
         if schema_yaml_path.exists():
             curated = load_schema_yaml(schema_yaml_path)
