@@ -66,10 +66,10 @@ SQLite tables:
 Key behaviors:
 - `import_jsonl()` uses **replace semantics** (deletes existing records for same collection before inserting)
 - `import_jsonl()` preserves existing schema descriptions across reimports via `_load_schema_descriptions()`
-- `import_readme()` parses README.md frontmatter, imports each JSONL from `contents`, merges curated schema from sibling `schema.yaml`
+- `import_readme()` parses README.md frontmatter, imports each JSONL from `contents` (resolves paths relative to README, so nested `collection/collection.jsonl` paths work), merges curated schema from sibling `schema.yaml`
 - `_save_schema_entries()` is the shared helper for writing to `_schema` table (used by both `import_jsonl` and `merge_curated_schema`)
 - `_store_readme_metadata()` / `_load_readme_metadata()` serialize README frontmatter + body to/from `_metadata` KV table
-- `export()` writes JSONL files + README.md + schema.yaml, preserving stored frontmatter metadata
+- `export()` writes JSONL files + README.md + schema.yaml, preserving stored frontmatter metadata. Supports `nested` (per-collection subdirectories with own README + schema.yaml), `since`/`until` (temporal slicing with two-pass schema recomputation from filtered data), and schema-in-README injection via `render.py` sentinels
 - `get_readme()` is the public accessor for stored README metadata
 - `query()` is read-only (SELECT/WITH prefix check + sqlite3 authorizer)
 
@@ -79,7 +79,15 @@ Key behaviors:
 
 ### CLI (`cli.py`)
 
-Subcommands: `import`, `export`, `schema`, `query`, `info`, `detect`, `fix`, `mcp`. Import routing: `.md` → `import_readme()`, directory → looks for `README.md`, everything else → `import_jsonl()`. The CLI uses lazy imports (`from .database import Database` inside functions) to keep startup fast.
+Subcommands: `import`, `export`, `schema`, `query`, `info`, `detect`, `fix`, `mcp`. Export flags: `--nested` (per-collection subdirectories), `--since`/`--until` (temporal slicing). Import routing: `.md` → `import_readme()`, directory → looks for `README.md`, everything else → `import_jsonl()`. The CLI uses lazy imports (`from .database import Database` inside functions) to keep startup fast.
+
+### Schema Rendering (`render.py`)
+
+`render_schema_summary()` and `render_schema_detail()` produce markdown tables from `CollectionSchema`. `inject_schema_block()` handles sentinel-based injection into README bodies (`<!-- arkiv:schema:begin/end -->`). Used by `export()`.
+
+### Temporal Filtering (`timefilter.py`)
+
+`increment_iso_prefix()` handles ISO 8601 date arithmetic. `build_time_filter()` constructs SQL WHERE clauses for `--since`/`--until`. Used by `export()`.
 
 ### MCP Server (`server.py`)
 
@@ -89,10 +97,26 @@ Subcommands: `import`, `export`, `schema`, `query`, `info`, `detect`, `fix`, `mc
 
 ```
 archive/
-├── README.md           # ECHO self-description (YAML frontmatter + markdown)
+├── README.md           # Self-description (YAML frontmatter + markdown)
 ├── schema.yaml         # Structured metadata schema (auto-generated, curatable)
 ├── conversations.jsonl
 └── bookmarks.jsonl
+```
+
+With `--nested` export:
+
+```
+archive/
+├── README.md
+├── schema.yaml
+├── conversations/
+│   ├── README.md
+│   ├── schema.yaml
+│   └── conversations.jsonl
+└── bookmarks/
+    ├── README.md
+    ├── schema.yaml
+    └── bookmarks.jsonl
 ```
 
 - **README.md** -- YAML frontmatter (`name`, `description`, `datetime`, `generator`, `contents`) + markdown body
@@ -116,4 +140,4 @@ A curated example archive lives at `examples/repos/` and is verified by `test_in
 
 - [longshade](../longshade/) -- Persona packaging convention (consumer of arkiv)
 - [memex](../memex/), [mtk](../mtk/), [btk](../btk/), [ptk](../ptk/), [ebk](../ebk/), [repoindex](../repoindex/), [chartfold](../chartfold/) -- Source toolkits (producers of arkiv JSONL)
-- [longecho](../longecho/) -- ECHO compliance validator
+- [longecho](../longecho/) -- longecho compliance validator

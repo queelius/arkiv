@@ -22,7 +22,7 @@ arkiv is not specific to any application. It is a general-purpose format for per
 ## Design Principles
 
 1. **Permissive input, best-effort processing.** Any valid JSON object is a valid record. Accept everything, preserve everything, process what you can.
-2. **The archive directory is canonical.** The JSONL files, README.md, and schema.yaml together are the durable, portable source of truth. SQLite is a derived view.
+2. **The archive is the source of truth.** arkiv archives exist in two interconvertible forms -- a directory (README.md + schema.yaml + *.jsonl) and a database (single SQLite file). Both represent the same data. In normal use they stay in sync via import/export. If they diverge, the directory form is authoritative.
 3. **Standards over conventions.** MIME types (not custom type enums), URIs (not custom path formats), ISO 8601 (not custom date formats), SQL (not a custom query language).
 4. **Document-oriented, not relational.** Each record is a self-contained resource. Denormalize at export time from relational sources.
 5. **No required fields.** The format imposes no schema. Metadata is freeform JSON. Applications decide what fields they need.
@@ -100,6 +100,24 @@ archive/
 │   └── photo.jpg
 └── archive.db          # Optional: SQLite derived view (regenerable)
 ```
+
+With `--nested` export, each collection gets its own subdirectory:
+
+```
+archive/
+├── README.md           # Top-level archive identity
+├── schema.yaml         # Combined data dictionary
+├── conversations/      # Per-collection subdirectory
+│   ├── README.md
+│   ├── schema.yaml
+│   └── conversations.jsonl
+└── bookmarks/
+    ├── README.md
+    ├── schema.yaml
+    └── bookmarks.jsonl
+```
+
+In both layouts, the top-level README and schema.yaml cover the full archive. Nested collection READMEs contain per-collection metadata and a detailed schema table.
 
 **The source of truth is the archive directory** -- specifically the JSONL files, README.md, and schema.yaml. The SQLite database is derived and can always be regenerated from these files.
 
@@ -327,6 +345,7 @@ The `_schema` table stores the merged schema (auto-discovered + curated). The `s
 - Writes README.md from stored `_metadata`
 - Writes schema.yaml from `_schema` table
 - Roundtrip is lossless: import → export produces equivalent files
+- Exported READMEs contain auto-generated schema summary tables wrapped in `<!-- arkiv:schema:begin -->` / `<!-- arkiv:schema:end -->` sentinel comments. On re-export, the region between sentinels is replaced; prose outside sentinels is preserved
 
 ### Query safety
 
@@ -386,6 +405,8 @@ arkiv import ./archive/ --db archive.db              # directory (auto-detects R
 
 # Export
 arkiv export archive.db --output ./exported/         # JSONL + README.md + schema.yaml
+arkiv export archive.db --output ./out/ --nested     # per-collection subdirectories
+arkiv export archive.db --output 2024/ --since 2024-01-01 --until 2024-12-31  # temporal slice
 
 # Query and inspect
 arkiv query archive.db "SELECT ..."                  # SQL query
@@ -405,18 +426,18 @@ arkiv mcp archive.db                                 # start MCP server (stdio t
 
 # Part 4: Ecosystem
 
-## Relationship to ECHO
+## Relationship to longecho
 
-ECHO is a philosophy and compliance standard for durable personal archives, validated by [longecho](https://github.com/queelius/longecho). Its core requirements: self-describing (README), durable formats, graceful degradation, local-first.
+longecho is a philosophy and compliance standard for durable personal archives, validated by [longecho](https://github.com/queelius/longecho). Its core requirements: self-describing (README), durable formats, graceful degradation, local-first.
 
-arkiv is independent of ECHO but naturally ECHO-compliant:
+arkiv is independent of longecho but naturally longecho-compliant:
 
-- **README.md** satisfies ECHO's self-description requirement
+- **README.md** satisfies longecho's self-description requirement
 - **JSONL** is a durable format (plain text, human-readable, no special tools needed)
 - **SQLite** is a durable format (Library of Congress recommended archival format)
 - **Two degradation layers**: SQLite for rich queries, JSONL for `cat`/`grep`/text editors
 
-An arkiv archive with a README is automatically ECHO-compliant.
+An arkiv archive with a README is automatically longecho-compliant.
 
 ## Toolkit Output Convention
 
@@ -450,7 +471,7 @@ toolkit-export/
 
 ### Compliance
 
-- **longecho** -- ECHO compliance validator
+- **longecho** -- longecho compliance validator
 
 ## Privacy and Encryption
 
@@ -506,5 +527,4 @@ A README.md with YAML frontmatter is simultaneously human-readable documentation
 
 - **FTS5 full-text search** -- Pre-built during import for faster text search
 - **Vector embeddings** -- Optional embedding column for semantic search
-- **Hierarchical archives** -- Subdirectories with their own README.md + schema.yaml
 - **Watch mode** -- Monitor JSONL files for changes, auto-update SQLite
