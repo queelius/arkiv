@@ -377,6 +377,65 @@ class TestReadmeMetadata:
 
 
 
+class TestInsertRecord:
+    def test_basic_insert(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        result = db.insert_record("test", "hello world")
+        assert result["id"] is not None
+        assert result["collection"] == "test"
+        rows = db.query("SELECT content FROM records WHERE collection = 'test'")
+        assert len(rows) == 1
+        assert rows[0]["content"] == "hello world"
+        db.close()
+
+    def test_insert_with_metadata(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        db.insert_record("test", "msg", metadata={"role": "user", "session": "s1"})
+        rows = db.query(
+            "SELECT json_extract(metadata, '$.role') as role FROM records"
+        )
+        assert rows[0]["role"] == "user"
+        db.close()
+
+    def test_insert_default_timestamp(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        result = db.insert_record("test", "msg")
+        assert result["timestamp"] is not None
+        assert "T" in result["timestamp"]
+        db.close()
+
+    def test_insert_custom_timestamp(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        result = db.insert_record("test", "msg", timestamp="2026-01-01T00:00:00Z")
+        assert result["timestamp"] == "2026-01-01T00:00:00Z"
+        db.close()
+
+    def test_insert_append_semantics(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        db.insert_record("test", "first")
+        db.insert_record("test", "second")
+        rows = db.query("SELECT content FROM records WHERE collection = 'test' ORDER BY id")
+        assert len(rows) == 2
+        assert rows[0]["content"] == "first"
+        assert rows[1]["content"] == "second"
+        db.close()
+
+    def test_insert_validates_collection_name(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        with pytest.raises(ValueError, match="path separator"):
+            db.insert_record("../escape", "msg")
+        with pytest.raises(ValueError, match="dot"):
+            db.insert_record(".hidden", "msg")
+        db.close()
+
+    def test_insert_with_mimetype(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        db.insert_record("test", '{"key": "value"}', mimetype="application/json")
+        rows = db.query("SELECT mimetype FROM records WHERE collection = 'test'")
+        assert rows[0]["mimetype"] == "application/json"
+        db.close()
+
+
 class TestInfo:
     def test_get_info(self, tmp_path):
         f = tmp_path / "test.jsonl"

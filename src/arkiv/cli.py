@@ -295,7 +295,7 @@ def cmd_mcp(args):
     """Start the MCP server."""
     from .server import run_mcp_server
 
-    run_mcp_server(db_path=args.db)
+    run_mcp_server(db_path=args.db, writable=getattr(args, 'writable', False))
 
 
 def main():
@@ -370,6 +370,8 @@ def main():
     # mcp
     p_mcp = subparsers.add_parser("mcp", help="Start MCP server")
     p_mcp.add_argument("db", help="SQLite database path")
+    p_mcp.add_argument("--writable", action="store_true",
+                        help="Enable write_record tool (default: read-only)")
     p_mcp.set_defaults(func=cmd_mcp)
 
     args = parser.parse_args()

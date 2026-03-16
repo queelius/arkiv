@@ -85,3 +85,42 @@ class TestArkivServer:
         assert len(result["collections"]) == 1
         assert result["collections"][0]["file"] == "data.jsonl"
         srv.close()
+
+
+class TestWritableServer:
+    def test_insert_record_via_server(self, tmp_path):
+        """Write via Database.insert_record, read back via ArkivServer."""
+        from arkiv.database import Database
+
+        db = Database(tmp_path / "test.db")
+        db.insert_record("test", "hello", metadata={"key": "val"})
+        db.close()
+
+        srv = ArkivServer(db_path=tmp_path / "test.db")
+        result = srv.sql_query("SELECT content FROM records WHERE collection = 'test'")
+        assert len(result) == 1
+        assert result[0]["content"] == "hello"
+        srv.close()
+
+    def test_writable_server_can_write(self, tmp_path):
+        """ArkivServer with writable=True opens DB in read-write mode."""
+        srv = ArkivServer(db_path=tmp_path / "test.db", writable=True)
+        result = srv.db.insert_record("test", "written via writable server")
+        assert result["id"] is not None
+        rows = srv.sql_query("SELECT content FROM records WHERE collection = 'test'")
+        assert len(rows) == 1
+        srv.close()
+
+    def test_readonly_server_cannot_write(self, tmp_path):
+        """ArkivServer without writable flag opens DB read-only."""
+        # Create DB first so it exists for read-only open
+        from arkiv.database import Database
+
+        db = Database(tmp_path / "test.db")
+        db.close()
+
+        srv = ArkivServer(db_path=tmp_path / "test.db")
+        # read_only DB should reject writes
+        with pytest.raises(Exception):
+            srv.db.insert_record("test", "should fail")
+        srv.close()

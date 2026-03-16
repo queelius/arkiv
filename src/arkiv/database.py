@@ -115,6 +115,35 @@ class Database:
 
         return count
 
+    def insert_record(
+        self,
+        collection: str,
+        content: str,
+        mimetype: str = "text/plain",
+        timestamp: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Insert a single record. Append semantics (does not delete existing records).
+
+        Returns dict with id, collection, and timestamp of the inserted record.
+        """
+        _validate_collection_name(collection)
+        if timestamp is None:
+            from datetime import datetime, timezone
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        metadata_json = json.dumps(metadata) if metadata else None
+        cursor = self.conn.execute(
+            "INSERT INTO records (collection, mimetype, uri, content, timestamp, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (collection, mimetype, None, content, timestamp, metadata_json),
+        )
+        self.conn.commit()
+        return {
+            "id": cursor.lastrowid,
+            "collection": collection,
+            "timestamp": timestamp,
+        }
+
     def _load_schema_descriptions(self, collection: str) -> Dict[str, str]:
         """Load existing schema descriptions for a collection."""
         try:

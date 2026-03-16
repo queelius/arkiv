@@ -13,8 +13,9 @@ class ArkivServer:
     Derives all metadata from the database — no external manifest needed.
     """
 
-    def __init__(self, db_path: Union[str, Path]):
-        self.db = Database(db_path, read_only=True)
+    def __init__(self, db_path: Union[str, Path], writable: bool = False):
+        self.db = Database(db_path, read_only=not writable)
+        self.writable = writable
 
     def get_manifest(self) -> Dict[str, Any]:
         """Return archive overview from _metadata + DB info + schema."""
@@ -57,7 +58,7 @@ class ArkivServer:
         self.db.close()
 
 
-def run_mcp_server(db_path: str) -> None:
+def run_mcp_server(db_path: str, writable: bool = False) -> None:
     """Run the arkiv MCP server over stdio."""
     try:
         from mcp.server.fastmcp import FastMCP
@@ -67,7 +68,7 @@ def run_mcp_server(db_path: str) -> None:
         )
 
     mcp = FastMCP("arkiv")
-    arkiv = ArkivServer(db_path)
+    arkiv = ArkivServer(db_path, writable=writable)
 
     @mcp.tool()
     def get_manifest() -> str:
@@ -84,5 +85,34 @@ def run_mcp_server(db_path: str) -> None:
         """Run a read-only SQL query against the archive. The 'records' table has columns: id, collection, mimetype, uri, content, timestamp, metadata (JSON). Use json_extract(metadata, '$.key') to query metadata fields. Only SELECT statements are allowed."""
         results = arkiv.sql_query(query)
         return json.dumps(results, indent=2, default=str)
+
+    if writable:
+        @mcp.tool()
+        def write_record(
+            collection: str,
+            content: str,
+            mimetype: str = "text/plain",
+            timestamp: str = "",
+            metadata: str = "",
+        ) -> str:
+            """Write a single record to a collection. Append semantics — does not delete existing records.
+
+            Args:
+                collection: Collection name (e.g., "conversations", "sessions")
+                content: Record content (text or JSON string)
+                mimetype: MIME type (default: text/plain)
+                timestamp: ISO 8601 timestamp (default: current UTC time)
+                metadata: JSON string of metadata key-value pairs (optional)
+            """
+            meta_dict = json.loads(metadata) if metadata else None
+            ts = timestamp if timestamp else None
+            result = arkiv.db.insert_record(
+                collection=collection,
+                content=content,
+                mimetype=mimetype,
+                timestamp=ts,
+                metadata=meta_dict,
+            )
+            return json.dumps(result, indent=2)
 
     mcp.run(transport="stdio")
