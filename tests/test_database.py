@@ -428,11 +428,55 @@ class TestInsertRecord:
             db.insert_record(".hidden", "msg")
         db.close()
 
+    def test_insert_rejects_empty_collection_name(self, tmp_path):
+        """Regression: empty collection name must not be silently accepted."""
+        db = Database(tmp_path / "test.db")
+        with pytest.raises(ValueError, match="non-empty"):
+            db.insert_record("", "msg")
+        with pytest.raises(ValueError, match="non-empty"):
+            db.insert_record("   ", "msg")
+        db.close()
+
     def test_insert_with_mimetype(self, tmp_path):
         db = Database(tmp_path / "test.db")
         db.insert_record("test", '{"key": "value"}', mimetype="application/json")
         rows = db.query("SELECT mimetype FROM records WHERE collection = 'test'")
         assert rows[0]["mimetype"] == "application/json"
+        db.close()
+
+
+class TestPathTraversalGuard:
+    """Regression: _validate_collection_name must be called from every
+    code path that accepts a collection name, not just nested export."""
+
+    def test_import_jsonl_rejects_path_traversal(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        with pytest.raises(ValueError, match="path separator"):
+            db.import_jsonl(f, collection="../pwn")
+        db.close()
+
+    def test_import_jsonl_rejects_dot_prefix(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        with pytest.raises(ValueError, match="dot"):
+            db.import_jsonl(f, collection=".hidden")
+        db.close()
+
+    def test_flat_export_rejects_unsafe_collection_from_db(self, tmp_path):
+        """Even if unsafe names somehow got into the DB, flat export must
+        reject them before writing files outside the output directory."""
+        # Open DB read-write and inject a bad name directly (bypassing import_jsonl)
+        db = Database(tmp_path / "test.db")
+        db.conn.execute(
+            "INSERT INTO records (collection, content) VALUES (?, ?)",
+            ("../pwn", "hello"),
+        )
+        db.conn.commit()
+        with pytest.raises(ValueError, match="path separator"):
+            db.export(tmp_path / "out", nested=False)
         db.close()
 
 

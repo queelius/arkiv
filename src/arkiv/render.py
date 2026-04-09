@@ -80,7 +80,10 @@ def inject_schema_block(body: str, schema_block: str) -> str:
         re.DOTALL,
     )
     if pattern.search(body):
-        return pattern.sub(schema_block.strip(), body)
+        # Use a lambda so schema_block is treated literally, not as a
+        # regex replacement template (otherwise \1, \g<x>, etc. crash).
+        replacement = schema_block.strip()
+        return pattern.sub(lambda _m: replacement, body, count=1)
     # Append
     if body and not body.endswith("\n"):
         return body + "\n\n" + schema_block

@@ -343,19 +343,25 @@ class TestNestedExport:
         assert paths.index("books/") < paths.index("convos/")
 
     def test_nested_rejects_unsafe_collection_name(self, tmp_path):
+        """Even if a bad name somehow reaches the DB, nested export rejects it."""
         db = Database(tmp_path / "test.db")
-        f = tmp_path / "data.jsonl"
-        f.write_text('{"content": "hi"}\n')
-        db.import_jsonl(f, collection="../evil")
+        db.conn.execute(
+            "INSERT INTO records (collection, content) VALUES (?, ?)",
+            ("../evil", "hi"),
+        )
+        db.conn.commit()
         with pytest.raises(ValueError, match="path separator"):
             db.export(tmp_path / "out", nested=True)
         db.close()
 
     def test_nested_rejects_dot_prefix_name(self, tmp_path):
+        """Even if a bad name somehow reaches the DB, nested export rejects it."""
         db = Database(tmp_path / "test.db")
-        f = tmp_path / "data.jsonl"
-        f.write_text('{"content": "hi"}\n')
-        db.import_jsonl(f, collection=".hidden")
+        db.conn.execute(
+            "INSERT INTO records (collection, content) VALUES (?, ?)",
+            (".hidden", "hi"),
+        )
+        db.conn.commit()
         with pytest.raises(ValueError, match="dot"):
             db.export(tmp_path / "out", nested=True)
         db.close()

@@ -183,3 +183,24 @@ class TestInjectSchemaBlock:
         assert "Footer prose." in result
         assert "stale data" not in result
         assert "fresh data" in result
+
+    def test_schema_block_with_backref_sequence_does_not_crash(self):
+        """Regression: re.sub treats the replacement as a template, so \\1 in
+        the schema block previously raised 'invalid group reference'. The fix
+        uses a callable replacement so the string is treated literally."""
+        body = f"{BEGIN}\nold\n{END}"
+        block_with_backref = (
+            f"{BEGIN}\n| col | description mentioning \\1 capture group |\n{END}"
+        )
+        result = inject_schema_block(body, block_with_backref)
+        assert "\\1 capture group" in result
+        assert "old" not in result
+
+    def test_schema_block_with_multiple_backslash_sequences(self):
+        """Backslashes at group boundaries should all be preserved literally."""
+        body = f"Prose.\n\n{BEGIN}\nstale\n{END}"
+        block = f"{BEGIN}\nvalues: [\\1, \\2, \\g<name>]\n{END}"
+        result = inject_schema_block(body, block)
+        assert "\\1" in result
+        assert "\\2" in result
+        assert "\\g<name>" in result

@@ -13,8 +13,22 @@ from .schema import SchemaEntry, CollectionSchema, discover_schema, merge_schema
 _UNSAFE_NAMES = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
 
 
+def _collection_name_from_path(path: str) -> str:
+    """Extract collection name from a contents entry path.
+
+    Handles both flat form ("conversations.jsonl") and nested form
+    ("conversations/"). Python 3.8 compatible (no str.removesuffix).
+    """
+    name = path.rstrip("/")
+    if name.endswith(".jsonl"):
+        name = name[: -len(".jsonl")]
+    return name
+
+
 def _validate_collection_name(name):
-    """Validate a collection name is safe for use as a directory name."""
+    """Validate a collection name is safe for use as a file/directory name."""
+    if not isinstance(name, str) or not name or not name.strip():
+        raise ValueError(f"Collection name must be a non-empty string: {name!r}")
     if "/" in name or "\\" in name:
         raise ValueError(f"Collection name contains path separator: {name!r}")
     if name.startswith("."):
@@ -83,6 +97,7 @@ class Database:
         path = Path(path)
         if collection is None:
             collection = path.stem
+        _validate_collection_name(collection)
 
         # Replace semantics: clear existing records for this collection
         self.conn.execute(
@@ -366,9 +381,9 @@ class Database:
             "SELECT DISTINCT collection FROM records"
         ):
             coll_name = row[0]
+            _validate_collection_name(coll_name)
 
             if nested:
-                _validate_collection_name(coll_name)
                 coll_dir = output_dir / coll_name
                 coll_dir.mkdir(parents=True, exist_ok=True)
                 jsonl_path = coll_dir / f"{coll_name}.jsonl"
@@ -459,8 +474,7 @@ class Database:
         # Apply collection ordering from stored README
         if stored_order:
             def _sort_key(item):
-                p = item["path"]
-                name = p.rstrip("/").removesuffix(".jsonl")
+                name = _collection_name_from_path(item["path"])
                 if name in stored_order:
                     return (0, stored_order.index(name))
                 return (1, name)
@@ -474,7 +488,7 @@ class Database:
         updated_contents = []
         for item in contents:
             # Look up stored description using both flat and nested path forms
-            coll_name = item["path"].rstrip("/").removesuffix(".jsonl")
+            coll_name = _collection_name_from_path(item["path"])
             stored = stored_contents_map.get(f"{coll_name}.jsonl", {})
             if not stored.get("description"):
                 stored = stored_contents_map.get(f"{coll_name}/", {})
