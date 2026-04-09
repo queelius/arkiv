@@ -482,7 +482,7 @@ Layer 0: Plain files        (text editor, file browser, human eyes)
 
 Each layer is independently functional and regenerable from the layer beneath. Losing the top layer does not compromise the ones below. Layer 0 is the substrate: if it survives, everything else can be rebuilt.
 
-**Regenerability principle.** Every layer above Layer 0 MUST be regenerable from the directory form (README.md plus schema.yaml plus JSONL files). The SQLite database is derived; the MCP server is derived; the schema dictionary is derived. This means the directory form is the only thing that needs backup, version control, or long-term preservation.
+**Regenerability principle.** The directory form and the database form are isomorphic: each can regenerate the other losslessly via `arkiv import` and `arkiv export`. Neither is a cache of the other. However, the directory form is authoritative on divergence because it is human-inspectable, git-diffable, and editable without tooling. Every layer above the directory form MUST be regenerable from it. See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) for the full rationale.
 
 ## 4.3 Ecosystem Roles
 
