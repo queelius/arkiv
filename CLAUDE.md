@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What arkiv Is
 
-Universal personal data format with JSONL canonical storage, SQLite query layer, and MCP server.
+Universal personal data format with two interconvertible forms (directory and database) plus an MCP server.
 
-- **JSONL** is the source of truth (human-readable, portable, mergeable)
-- **SQLite** is the derived query layer (efficient, standard SQL, JSON1 extension)
-- **MCP server** exposes 3 tools: `get_manifest()`, `get_schema()`, `sql_query()`
+- **Directory form** is README.md + schema.yaml + *.jsonl (human-readable, portable, git-friendly)
+- **Database form** is a single SQLite file (queryable, efficient, JSON1 extension)
+- The two forms are peers. In normal use they stay in sync via import/export. If they diverge, the directory form is authoritative.
+- **MCP server** exposes 3 read-only tools by default (`get_manifest`, `get_schema`, `sql_query`), plus `write_record` when started with `--writable`
 
 ## What arkiv Is NOT
 
@@ -75,7 +76,7 @@ Key behaviors:
 
 ### README / Archive Identity (`readme.py`)
 
-`Readme` dataclass with `frontmatter: dict` and `body: str`. Frontmatter is `---`-delimited YAML. Known frontmatter keys by convention: `name`, `description`, `datetime`, `generator`, `contents`.
+`Readme` dataclass with `frontmatter: dict` and `body: str`. Frontmatter is `---`-delimited YAML. Known frontmatter keys by convention: `name`, `description`, `datetime`, `generator`, `arkiv_format`, `contents`.
 
 ### CLI (`cli.py`)
 
@@ -119,7 +120,7 @@ archive/
     └── bookmarks.jsonl
 ```
 
-- **README.md** -- YAML frontmatter (`name`, `description`, `datetime`, `generator`, `contents`) + markdown body
+- **README.md** -- YAML frontmatter (`name`, `description`, `datetime`, `generator`, `arkiv_format`, `contents`) + markdown body
 - **schema.yaml** -- per-collection metadata keys with type, count, values, description
 - **Merge-on-import** -- live fields (type, count) recomputed from data; stable fields (description, curated values) preserved
 
@@ -128,7 +129,7 @@ A curated example archive lives at `examples/repos/` and is verified by `test_in
 ## Key Principles
 
 1. All record fields optional -- permissive input, best-effort processing
-2. JSONL canonical, SQLite derived -- can always regenerate the DB from JSONL
+2. Two interconvertible forms (directory and database). Directory is authoritative on divergence.
 3. Standards-based -- MIME types, URIs, ISO 8601, SQL
 4. Document-oriented, not relational
 

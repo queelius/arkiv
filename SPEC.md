@@ -357,7 +357,7 @@ Both layers are applied. The authorizer prevents bypass via SQL comments, semico
 
 ## 3.2 MCP Server
 
-The reference implementation includes an MCP server (requires `pip install arkiv[mcp]`) that exposes three tools over **stdio** transport:
+The reference implementation includes an MCP server (requires `pip install arkiv[mcp]`) that exposes tools over **stdio** transport. By default the server is read-only and exposes three tools: `get_manifest`, `get_schema`, and `sql_query`. When started with `--writable`, it additionally exposes `write_record` for append-only inserts.
 
 #### `get_manifest()`
 
@@ -379,6 +379,24 @@ Runs a read-only SQL query. Use `metadata->>'key'` or `json_extract(metadata, '$
 
 **Parameters:** `query` (string, SELECT only)
 **Returns:** JSON array of row objects.
+
+#### `write_record(collection, content, mimetype?, timestamp?, metadata?)`
+
+**Only available when the server was started with `--writable`.** Appends a single record to a collection. Append semantics: does not delete or modify existing records.
+
+**Parameters:**
+- `collection` (string, required): target collection name
+- `content` (string, required): record content (text or JSON string)
+- `mimetype` (string, optional, default `"text/plain"`): MIME type of the content
+- `timestamp` (string, optional): ISO 8601 timestamp; defaults to current UTC
+- `metadata` (string, optional): JSON string of metadata key-value pairs
+
+**Returns:** JSON object with the inserted record's `id`, `collection`, and `timestamp`.
+
+**Notes:**
+- The schema (`_schema` table) is NOT recomputed per write. It reflects the state at last import/export. Use `arkiv import` to refresh the schema after bulk writes.
+- Collection names are validated (no path separators, no leading dot, no OS-reserved names).
+- Use `--writable` sparingly: the read-only default is the recommended deployment mode.
 
 ### Usage pattern
 
@@ -419,7 +437,8 @@ arkiv detect conversations.jsonl --strict            # exit 1 on any warnings
 arkiv fix conversations.jsonl                        # fix known field misspellings (e.g., url → uri)
 
 # MCP server
-arkiv mcp archive.db                                 # start MCP server (stdio transport)
+arkiv mcp archive.db                                 # start MCP server (read-only, stdio transport)
+arkiv mcp --writable archive.db                      # enable write_record tool (append-only)
 ```
 
 ---

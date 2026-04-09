@@ -39,11 +39,14 @@ arkiv mcp archive.db
 
 ## MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| `get_manifest()` | What collections exist, their descriptions and schemas |
-| `get_schema(collection?)` | What metadata keys can be queried |
-| `sql_query(query)` | Run read-only SQL |
+Read-only by default. Start with `arkiv mcp --writable db` to enable the write tool.
+
+| Tool | Description | Mode |
+|------|-------------|------|
+| `get_manifest()` | What collections exist, their descriptions and schemas | read-only |
+| `get_schema(collection?)` | What metadata keys can be queried | read-only |
+| `sql_query(query)` | Run read-only SQL | read-only |
+| `write_record(...)` | Append a single record to a collection | writable |
 
 ## Why
 
