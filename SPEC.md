@@ -106,7 +106,7 @@ With `--nested` export, each collection gets its own subdirectory:
 ```
 archive/
 ├── README.md           # Top-level archive identity
-├── schema.yaml         # Combined data dictionary
+├── schema.yaml         # Full data dictionary (convenience copy; per-collection files are authoritative on reimport)
 ├── conversations/      # Per-collection subdirectory
 │   ├── README.md
 │   ├── schema.yaml
@@ -134,7 +134,7 @@ Every arkiv archive SHOULD have a `README.md` with YAML frontmatter. This makes 
 name: Alex's personal data archive
 description: Conversations, bookmarks, and writings
 datetime: 2026-02-16
-generator: arkiv v0.2.0
+generator: arkiv v0.1.1
 arkiv_format: "0.2"
 contents:
   - path: conversations.jsonl
@@ -148,13 +148,15 @@ contents:
 This archive contains personal data exported from various tools...
 ```
 
+Note: the `generator` field tracks the package version of the tool that created the archive, while `arkiv_format` tracks the format specification version. These may differ if the package is updated but the format version remains stable.
+
 ### Frontmatter fields (by convention)
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Human-readable name of the archive |
 | `description` | string | Brief description |
-| `datetime` | string | ISO 8601 date of creation or last update |
+| `datetime` | string | ISO 8601 date of the most recent export (or the time preserved in stored frontmatter) |
 | `generator` | string | Tool and version that created this archive |
 | `arkiv_format` | string | Format version (e.g., `"0.2"`) |
 | `contents` | array | List of `{path, description}` entries for each collection |
@@ -336,7 +338,7 @@ The `_schema` table stores the merged schema (auto-discovered + curated). The `s
 ### Import semantics
 
 - `import_jsonl(path, collection)`: Deletes existing records for the collection (**replace semantics**), then inserts all records from the JSONL file. Pre-computes schema, preserving existing descriptions.
-- `import_readme(path)`: Parses README frontmatter, imports each JSONL from `contents`, merges curated schema from sibling schema.yaml, stores README metadata.
+- `import_readme(path)`: Parses README frontmatter, imports each JSONL from `contents`, merges curated schema from sibling schema.yaml, stores README metadata. Handles nested archives: if a contents entry is a directory, the method recurses into its subdirectory, imports that subdirectory's README without storing its metadata in the top-level `_metadata` table.
 - Unknown top-level fields in records are merged into the `metadata` JSON column.
 
 ### Export semantics
@@ -346,6 +348,10 @@ The `_schema` table stores the merged schema (auto-discovered + curated). The `s
 - Writes schema.yaml from `_schema` table
 - Roundtrip is lossless: import → export produces equivalent files
 - Exported READMEs contain auto-generated schema summary tables wrapped in `<!-- arkiv:schema:begin -->` / `<!-- arkiv:schema:end -->` sentinel comments. On re-export, the region between sentinels is replaced; prose outside sentinels is preserved
+- Optional parameters:
+  - `nested`: If true, creates a subdirectory per collection, each with its own README.md and schema.yaml
+  - `since` / `until`: Filter records by timestamp to temporal slices; uses a two-pass approach where JSONL is written first, then schema is recomputed from the filtered output
+  - Empty collections (after filtering) are skipped and not written to output
 
 ### Query safety
 
@@ -364,7 +370,12 @@ The reference implementation includes an MCP server (requires `pip install arkiv
 Returns the archive overview: name, description (from README), collection list with record counts, descriptions, and metadata schemas.
 
 **Parameters:** None
-**Returns:** JSON object with `name`, `description` (if present), and `collections` array.
+
+**Returns:** JSON object with `name`, `description` (if present), and `collections` array. Each entry in the `collections` array is an object with:
+- `file` (string): collection filename or path (e.g., "conversations.jsonl" or "conversations/")
+- `record_count` (integer): number of records in the collection
+- `description` (string, optional): human-readable description from README frontmatter
+- `schema` (object, optional): object with `metadata_keys` mapping
 
 #### `get_schema(collection?)`
 
@@ -507,7 +518,7 @@ This preserves the full degradation chain: decrypt → decompress → plaintext 
 
 ## Design Decisions
 
-### Why JSONL as canonical?
+### Why JSONL as the durable layer?
 
 - Human-readable in a text editor
 - `cat`, `grep`, `wc -l` just work

@@ -20,6 +20,7 @@ JSONL files (canonical, portable, human-readable)
 SQLite database (queryable, efficient, standard SQL)
     ↓ arkiv mcp
 MCP server (3 tools → any LLM)
+    ↑ arkiv export
 ```
 
 ## Quick Start
@@ -32,6 +33,9 @@ arkiv import conversations.jsonl --db archive.db
 
 # Query
 arkiv query archive.db "SELECT content FROM records WHERE metadata->>'role' = 'user' LIMIT 5"
+
+# Export with temporal slicing
+arkiv export archive.db --output 2024/ --since 2024-01-01 --until 2024-12-31
 
 # Serve to LLMs via MCP
 arkiv mcp archive.db

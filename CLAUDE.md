@@ -68,6 +68,8 @@ Key behaviors:
 - `import_jsonl()` uses **replace semantics** (deletes existing records for same collection before inserting)
 - `import_jsonl()` preserves existing schema descriptions across reimports via `_load_schema_descriptions()`
 - `import_readme()` parses README.md frontmatter, imports each JSONL from `contents` (resolves paths relative to README, so nested `collection/collection.jsonl` paths work), merges curated schema from sibling `schema.yaml`
+- `insert_record()` is the append-only write path used by the MCP `write_record` tool. By design, it does NOT update the `_schema` table; the pre-computed schema reflects the state at last import/export.
+- `refresh_schema()` recomputes and persists schema for a collection by scanning all records. Use after batches of `insert_record()` writes to bring the pre-computed schema back in sync.
 - `_save_schema_entries()` is the shared helper for writing to `_schema` table (used by both `import_jsonl` and `merge_curated_schema`)
 - `_store_readme_metadata()` / `_load_readme_metadata()` serialize README frontmatter + body to/from `_metadata` KV table
 - `export()` writes JSONL files + README.md + schema.yaml, preserving stored frontmatter metadata. Supports `nested` (per-collection subdirectories with own README + schema.yaml), `since`/`until` (temporal slicing with two-pass schema recomputation from filtered data), and schema-in-README injection via `render.py` sentinels
@@ -80,7 +82,21 @@ Key behaviors:
 
 ### CLI (`cli.py`)
 
-Subcommands: `import`, `export`, `schema`, `query`, `info`, `detect`, `fix`, `mcp`. Export flags: `--nested` (per-collection subdirectories), `--since`/`--until` (temporal slicing). Import routing: `.md` → `import_readme()`, directory → looks for `README.md`, everything else → `import_jsonl()`. The CLI uses lazy imports (`from .database import Database` inside functions) to keep startup fast.
+Subcommands: `import`, `export`, `schema`, `query`, `info`, `detect`, `fix`, `mcp`.
+
+Key flags:
+- `export`: `--nested` (per-collection subdirectories with own README/schema), `--since`/`--until` (temporal slicing)
+- `mcp`: `--writable` (enable `write_record` tool for append-only inserts)
+
+Import routing: `.md` → `import_readme()`, directory → looks for `README.md`, everything else → `import_jsonl()`. The CLI uses lazy imports (`from .database import Database` inside functions) to keep startup fast.
+
+### Export (`database.py` export method)
+
+The `export()` method writes a full archive directory (JSONL + README.md + schema.yaml):
+- Schema-in-README injection: auto-generated schema tables are wrapped in HTML sentinels (`<!-- arkiv:schema:begin/end -->`). On re-export, the region between sentinels is replaced; prose outside is preserved.
+- Flat vs. nested modes: `nested=False` (default) writes all JSONL files at top level; `nested=True` creates a subdirectory per collection with its own README and schema.yaml.
+- Temporal slicing: `since` and `until` parameters filter records by timestamp; uses a two-pass approach where JSONL is written first, then schema is recomputed from the filtered output.
+- Empty collection skipping: collections that have zero records after filtering are not written to the output directory.
 
 ### Schema Rendering (`render.py`)
 
@@ -92,7 +108,16 @@ Subcommands: `import`, `export`, `schema`, `query`, `info`, `detect`, `fix`, `mc
 
 ### MCP Server (`server.py`)
 
-`ArkivServer` wraps a read-only `Database`. `run_mcp_server()` uses FastMCP (requires `pip install arkiv[mcp]`). All metadata is derived from the DB — no external files needed at serve time.
+`ArkivServer` wraps a read-only `Database`. `run_mcp_server()` uses FastMCP (requires `pip install arkiv[mcp]`). All metadata is derived from the DB. No external files are needed at serve time.
+
+### Public API
+
+The `arkiv` package re-exports these symbols for use by consumers:
+
+- Record model: `Record`, `parse_record`, `parse_jsonl`
+- Schema: `SchemaEntry`, `CollectionSchema`, `discover_schema`, `load_schema_yaml`, `save_schema_yaml`
+- README: `Readme`, `parse_readme`, `save_readme`
+- Database: `Database`
 
 ## Archive Format
 
