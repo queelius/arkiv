@@ -1,6 +1,6 @@
 """arkiv: Universal personal data format."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .record import Record, parse_record, parse_jsonl
 from .schema import (
