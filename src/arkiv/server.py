@@ -95,24 +95,46 @@ def run_mcp_server(db_path: str, writable: bool = False) -> None:
             timestamp: str = "",
             metadata: str = "",
         ) -> str:
-            """Write a single record to a collection. Append semantics — does not delete existing records.
+            """Write a single record to a collection. Append semantics: does not delete existing records.
 
             Args:
                 collection: Collection name (e.g., "conversations", "sessions")
                 content: Record content (text or JSON string)
                 mimetype: MIME type (default: text/plain)
                 timestamp: ISO 8601 timestamp (default: current UTC time)
-                metadata: JSON string of metadata key-value pairs (optional)
+                metadata: JSON string of metadata key-value pairs (optional, must be a JSON object)
             """
-            meta_dict = json.loads(metadata) if metadata else None
+            # Parse and validate metadata
+            meta_dict = None
+            if metadata:
+                try:
+                    meta_dict = json.loads(metadata)
+                except json.JSONDecodeError as e:
+                    return json.dumps(
+                        {"error": f"metadata is not valid JSON: {e}"}, indent=2
+                    )
+                if not isinstance(meta_dict, dict):
+                    return json.dumps(
+                        {
+                            "error": (
+                                "metadata must be a JSON object, "
+                                f"got {type(meta_dict).__name__}"
+                            )
+                        },
+                        indent=2,
+                    )
+
             ts = timestamp if timestamp else None
-            result = arkiv.db.insert_record(
-                collection=collection,
-                content=content,
-                mimetype=mimetype,
-                timestamp=ts,
-                metadata=meta_dict,
-            )
+            try:
+                result = arkiv.db.insert_record(
+                    collection=collection,
+                    content=content,
+                    mimetype=mimetype,
+                    timestamp=ts,
+                    metadata=meta_dict,
+                )
+            except ValueError as e:
+                return json.dumps({"error": str(e)}, indent=2)
             return json.dumps(result, indent=2)
 
     mcp.run(transport="stdio")

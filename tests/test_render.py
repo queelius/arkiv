@@ -204,3 +204,69 @@ class TestInjectSchemaBlock:
         assert "\\1" in result
         assert "\\2" in result
         assert "\\g<name>" in result
+
+    def test_sentinels_inline_in_prose_not_matched(self):
+        """Regression: a sentinel-looking string embedded in a line of prose
+        (e.g., inside a code fence) must not be treated as a real sentinel."""
+        body = (
+            f"Docs about the arkiv sentinel format: `{BEGIN}` opens a block "
+            f"and `{END}` closes it.\n"
+        )
+        new_block = f"{BEGIN}\nNEW\n{END}"
+        result = inject_schema_block(body, new_block)
+        # Since inline mentions aren't real sentinels, the block should be
+        # APPENDED, not injected in place.
+        assert "Docs about the arkiv sentinel format" in result
+        assert "NEW" in result
+        # The prose should still mention the sentinels as backticked tokens
+        assert f"`{BEGIN}`" in result
+
+    def test_sentinels_on_own_line_with_leading_whitespace(self):
+        """Sentinels on their own line, possibly with leading whitespace,
+        should still be matched."""
+        body = f"Header.\n\n  {BEGIN}\nold\n  {END}\n\nFooter."
+        new_block = f"{BEGIN}\nnew\n{END}"
+        result = inject_schema_block(body, new_block)
+        assert "Header." in result
+        assert "Footer." in result
+        assert "old" not in result
+        assert "new" in result
+
+
+class TestRenderHeading:
+    """The heading parameter inserts a markdown heading inside the sentinel block."""
+
+    def test_summary_with_heading(self):
+        schemas = {
+            "books": CollectionSchema(
+                record_count=5,
+                metadata_keys={"title": SchemaEntry(type="string", count=5)},
+            )
+        }
+        md = render_schema_summary(schemas, heading="## Collections")
+        assert "## Collections" in md
+        # Heading should appear between the begin sentinel and the table
+        begin_idx = md.index(BEGIN)
+        heading_idx = md.index("## Collections")
+        table_idx = md.index("| Collection")
+        assert begin_idx < heading_idx < table_idx
+
+    def test_detail_with_heading(self):
+        schema = CollectionSchema(
+            record_count=1,
+            metadata_keys={"role": SchemaEntry(type="string", count=1, values=["u"])},
+        )
+        md = render_schema_detail(schema, heading="## Metadata Keys")
+        assert "## Metadata Keys" in md
+
+    def test_summary_without_heading(self):
+        """Backwards compat: omitting heading produces the original output."""
+        schemas = {
+            "books": CollectionSchema(
+                record_count=5,
+                metadata_keys={"title": SchemaEntry(type="string", count=5)},
+            )
+        }
+        md = render_schema_summary(schemas)
+        assert "## Collections" not in md
+        assert "| books |" in md

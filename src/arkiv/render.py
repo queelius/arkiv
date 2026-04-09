@@ -1,7 +1,7 @@
 """Schema-to-markdown rendering with sentinel-based injection."""
 
 import re
-from typing import Dict
+from typing import Dict, Optional
 
 from .schema import CollectionSchema, SchemaEntry
 
@@ -23,12 +23,20 @@ def _format_values(entry: SchemaEntry) -> str:
     return ""
 
 
-def render_schema_summary(schemas: Dict[str, CollectionSchema]) -> str:
+def render_schema_summary(
+    schemas: Dict[str, CollectionSchema],
+    heading: Optional[str] = None,
+) -> str:
     """Render a summary table of collections with record counts and key lists.
 
-    Returns markdown wrapped in sentinel comments.
+    Returns markdown wrapped in sentinel comments. If `heading` is provided,
+    it is inserted as a markdown heading between the opening sentinel and
+    the table.
     """
     lines = [BEGIN_SENTINEL]
+    if heading:
+        lines.append(heading)
+        lines.append("")
     lines.append("| Collection | Records | Keys |")
     lines.append("| --- | --- | --- |")
     for name, schema in schemas.items():
@@ -38,17 +46,25 @@ def render_schema_summary(schemas: Dict[str, CollectionSchema]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_schema_detail(schema: CollectionSchema) -> str:
+def render_schema_detail(
+    schema: CollectionSchema,
+    heading: Optional[str] = None,
+) -> str:
     """Render a detailed table of metadata keys for one collection.
 
     Includes a Description column only if any key has a description.
-    Returns markdown wrapped in sentinel comments.
+    Returns markdown wrapped in sentinel comments. If `heading` is provided,
+    it is inserted as a markdown heading between the opening sentinel and
+    the table.
     """
     has_description = any(
         e.description is not None for e in schema.metadata_keys.values()
     )
 
     lines = [BEGIN_SENTINEL]
+    if heading:
+        lines.append(heading)
+        lines.append("")
     if has_description:
         lines.append("| Key | Type | Count | Values | Description |")
         lines.append("| --- | --- | --- | --- | --- |")
@@ -71,13 +87,25 @@ def render_schema_detail(schema: CollectionSchema) -> str:
 def inject_schema_block(body: str, schema_block: str) -> str:
     """Inject a schema block into a markdown body.
 
-    If sentinel comments are found, replace the region between them (inclusive).
-    Otherwise, append the block to the body.
-    Prose outside sentinels is preserved.
+    If a matched sentinel pair is found (each sentinel on its own line),
+    replace the region between them (inclusive). Otherwise, append the
+    block to the body. Prose outside the sentinels is preserved.
+
+    Sentinels must appear on their own line (possibly with surrounding
+    whitespace) to be recognized. This prevents stray sentinels in user
+    prose (e.g., inside a code fence discussing arkiv) from being matched.
     """
+    # Line-anchored: sentinels must be on their own line, possibly with
+    # surrounding whitespace. MULTILINE makes ^ and $ match line boundaries.
     pattern = re.compile(
-        re.escape(BEGIN_SENTINEL) + r".*?" + re.escape(END_SENTINEL),
-        re.DOTALL,
+        r"^[ \t]*"
+        + re.escape(BEGIN_SENTINEL)
+        + r"[ \t]*$"
+        + r".*?"
+        + r"^[ \t]*"
+        + re.escape(END_SENTINEL)
+        + r"[ \t]*$",
+        re.DOTALL | re.MULTILINE,
     )
     if pattern.search(body):
         # Use a lambda so schema_block is treated literally, not as a

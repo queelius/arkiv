@@ -8,7 +8,13 @@ from typing import Any, Dict, List, Optional, Union
 import yaml
 
 from .record import Record, parse_jsonl
-from .schema import SchemaEntry, CollectionSchema, discover_schema, merge_schema
+from .schema import (
+    SchemaEntry,
+    CollectionSchema,
+    discover_schema,
+    discover_schema_from_metadata,
+    merge_schema,
+)
 
 _UNSAFE_NAMES = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
 
@@ -141,8 +147,18 @@ class Database:
         """Insert a single record. Append semantics (does not delete existing records).
 
         Returns dict with id, collection, and timestamp of the inserted record.
+
+        Note: the pre-computed schema in `_schema` is NOT updated by this
+        method. New metadata keys from inserted records are invisible to
+        `get_schema()` until `refresh_schema(collection)` is called or
+        the collection is reimported. This is a deliberate trade-off:
+        per-insert schema recomputation would make the write path O(n).
         """
         _validate_collection_name(collection)
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValueError(
+                f"metadata must be a dict or None, got {type(metadata).__name__}"
+            )
         if timestamp is None:
             from datetime import datetime, timezone
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -158,6 +174,32 @@ class Database:
             "collection": collection,
             "timestamp": timestamp,
         }
+
+    def refresh_schema(self, collection: str) -> None:
+        """Recompute and persist the schema for a collection.
+
+        Scans all records in the given collection, rebuilds the `_schema`
+        rows from scratch, and preserves existing curated descriptions.
+        Call this after a batch of `insert_record()` writes to bring the
+        pre-computed schema back in sync with the data.
+        """
+        _validate_collection_name(collection)
+
+        def _metadata_iter():
+            for row in self.conn.execute(
+                "SELECT metadata FROM records WHERE collection = ?",
+                (collection,),
+            ):
+                if row[0] is None:
+                    continue
+                yield json.loads(row[0])
+
+        schema = discover_schema_from_metadata(_metadata_iter())
+        existing_desc = self._load_schema_descriptions(collection)
+        for key, entry in schema.items():
+            if key in existing_desc:
+                entry.description = existing_desc[key]
+        self._save_schema_entries(collection, schema)
 
     def _load_schema_descriptions(self, collection: str) -> Dict[str, str]:
         """Load existing schema descriptions for a collection."""
@@ -350,7 +392,7 @@ class Database:
         """
         from . import __version__
         from .readme import Readme, save_readme
-        from .render import render_schema_detail, render_schema_summary, inject_schema_block, BEGIN_SENTINEL, END_SENTINEL
+        from .render import render_schema_detail, render_schema_summary, inject_schema_block
         from .schema import CollectionSchema, save_schema_yaml
         from .timefilter import build_time_filter
 
@@ -463,8 +505,10 @@ class Database:
                         "contents": [{"path": f"{coll_name}.jsonl"}],
                     },
                 )
-                detail_block = render_schema_detail(coll_schema)
-                coll_readme.body = inject_schema_block("", "## Metadata Keys\n\n" + detail_block)
+                detail_block = render_schema_detail(
+                    coll_schema, heading="## Metadata Keys"
+                )
+                coll_readme.body = inject_schema_block("", detail_block)
                 save_readme(coll_readme, coll_dir / "README.md")
 
                 contents.append({"path": f"{coll_name}/"})
@@ -500,10 +544,7 @@ class Database:
         readme.frontmatter["contents"] = updated_contents
         readme.frontmatter["arkiv_format"] = "0.2"
 
-        raw_table = render_schema_summary(schemas)
-        # Build a block with the heading inside sentinels so re-export replaces cleanly
-        inner = raw_table[len(BEGIN_SENTINEL) + 1 : -(len(END_SENTINEL) + 1)]
-        summary = BEGIN_SENTINEL + "\n## Collections\n\n" + inner + END_SENTINEL + "\n"
+        summary = render_schema_summary(schemas, heading="## Collections")
         readme.body = inject_schema_block(readme.body, summary)
 
         save_readme(readme, output_dir / "README.md")

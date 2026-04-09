@@ -428,6 +428,19 @@ class TestInsertRecord:
             db.insert_record(".hidden", "msg")
         db.close()
 
+    def test_insert_rejects_non_dict_metadata(self, tmp_path):
+        """Metadata must be a dict or None. Lists, strings, numbers, etc.
+        would silently produce invalid records that crash discover_schema
+        on re-import."""
+        db = Database(tmp_path / "test.db")
+        with pytest.raises(ValueError, match="metadata must be a dict"):
+            db.insert_record("test", "msg", metadata=[1, 2, 3])
+        with pytest.raises(ValueError, match="metadata must be a dict"):
+            db.insert_record("test", "msg", metadata="string")
+        with pytest.raises(ValueError, match="metadata must be a dict"):
+            db.insert_record("test", "msg", metadata=42)
+        db.close()
+
     def test_insert_rejects_empty_collection_name(self, tmp_path):
         """Regression: empty collection name must not be silently accepted."""
         db = Database(tmp_path / "test.db")
@@ -442,6 +455,67 @@ class TestInsertRecord:
         db.insert_record("test", '{"key": "value"}', mimetype="application/json")
         rows = db.query("SELECT mimetype FROM records WHERE collection = 'test'")
         assert rows[0]["mimetype"] == "application/json"
+        db.close()
+
+
+class TestRefreshSchema:
+    """insert_record does not update _schema by design. refresh_schema
+    brings the pre-computed schema back in sync after batches of writes."""
+
+    def test_insert_does_not_update_schema(self, tmp_path):
+        """Establishes expected behavior: writes are invisible to get_schema
+        until refresh_schema is called."""
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        db.import_jsonl(f, collection="data")
+
+        db.insert_record("data", "new msg", metadata={"role": "admin", "topic": "math"})
+
+        schema = db.get_schema("data")
+        # "topic" not visible yet; "admin" not in role values yet
+        assert "topic" not in schema["metadata_keys"]
+        assert "admin" not in schema["metadata_keys"]["role"].get("values", [])
+        db.close()
+
+    def test_refresh_schema_picks_up_new_keys(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        db.import_jsonl(f, collection="data")
+
+        db.insert_record("data", "new", metadata={"role": "admin", "topic": "math"})
+        db.refresh_schema("data")
+
+        schema = db.get_schema("data")
+        assert "topic" in schema["metadata_keys"]
+        assert schema["metadata_keys"]["role"]["count"] == 2
+        db.close()
+
+    def test_refresh_schema_preserves_descriptions(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"metadata": {"role": "user"}}\n')
+        db.import_jsonl(f, collection="data")
+
+        # Set a curated description
+        db.conn.execute(
+            "UPDATE _schema SET description = ? WHERE collection = ? AND key_path = ?",
+            ("Speaker identity", "data", "role"),
+        )
+        db.conn.commit()
+
+        db.insert_record("data", "new", metadata={"role": "admin"})
+        db.refresh_schema("data")
+
+        schema = db.get_schema("data")
+        assert schema["metadata_keys"]["role"]["description"] == "Speaker identity"
+        db.close()
+
+    def test_refresh_schema_validates_collection_name(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        with pytest.raises(ValueError, match="path separator"):
+            db.refresh_schema("../evil")
         db.close()
 
 

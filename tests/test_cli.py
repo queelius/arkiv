@@ -17,8 +17,9 @@ def run_arkiv(*args):
 
 class TestCLI:
     def test_version(self):
+        from arkiv import __version__
         result = run_arkiv("--version")
-        assert "0.1.0" in result.stdout
+        assert __version__ in result.stdout
 
     def test_help(self):
         result = run_arkiv("--help")

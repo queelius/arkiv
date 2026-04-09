@@ -56,17 +56,23 @@ def _json_type(value: Any) -> str:
     return "string"
 
 
-def discover_schema(path: Union[str, Path]) -> Dict[str, SchemaEntry]:
-    """Scan a JSONL file and discover metadata key schemas."""
+def discover_schema_from_metadata(
+    metadata_iter,
+) -> Dict[str, SchemaEntry]:
+    """Discover metadata key schemas from an iterable of metadata dicts.
+
+    Shared core used by both `discover_schema(path)` (reads JSONL) and
+    `Database.refresh_schema(collection)` (reads from SQLite).
+    """
     key_counts: Dict[str, int] = {}
     key_types: Dict[str, str] = {}
     key_values: Dict[str, set] = {}
     key_example: Dict[str, Any] = {}
 
-    for record in parse_jsonl(path):
-        if not record.metadata:
+    for metadata in metadata_iter:
+        if not metadata:
             continue
-        for key, value in record.metadata.items():
+        for key, value in metadata.items():
             key_counts[key] = key_counts.get(key, 0) + 1
             key_types[key] = _json_type(value)
 
@@ -105,6 +111,13 @@ def discover_schema(path: Union[str, Path]) -> Dict[str, SchemaEntry]:
         result[key] = entry
 
     return result
+
+
+def discover_schema(path: Union[str, Path]) -> Dict[str, SchemaEntry]:
+    """Scan a JSONL file and discover metadata key schemas."""
+    return discover_schema_from_metadata(
+        record.metadata for record in parse_jsonl(path)
+    )
 
 
 def load_schema_yaml(path: Union[str, Path]) -> Dict[str, CollectionSchema]:
