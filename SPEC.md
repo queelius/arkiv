@@ -456,54 +456,107 @@ arkiv mcp --writable archive.db                      # enable write_record tool 
 
 # Part 4: Ecosystem
 
-## Relationship to longecho
+arkiv does not stand alone. It is one layer in a broader model of durable personal data, alongside [longecho](https://github.com/queelius/longecho) and a collection of source toolkits and consumer applications. This section specifies how the pieces fit together. For the full rationale behind the model, see [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md).
 
-longecho is a philosophy and compliance standard for durable personal archives, validated by [longecho](https://github.com/queelius/longecho). Its core requirements: self-describing (README), durable formats, graceful degradation, local-first.
+## 4.1 Two Axes of Durability
 
-arkiv is independent of longecho but naturally longecho-compliant:
+Personal data fragility has two distinct dimensions:
 
-- **README.md** satisfies longecho's self-description requirement
-- **JSONL** is a durable format (plain text, human-readable, no special tools needed)
-- **SQLite** is a durable format (Library of Congress recommended archival format)
-- **Two degradation layers**: SQLite for rich queries, JSONL for `cat`/`grep`/text editors
+- **Durability across time.** The archive must remain useful decades from now, even if every current tool disappears. This requires self-description, plain formats, local-first access, and graceful degradation. longecho addresses this axis.
+- **Durability across complexity.** The archive must be usable *today*: queryable by SQL, navigable by LLMs, describable as a data dictionary. This requires structured metadata, a schema, and a query layer. arkiv addresses this axis.
 
-An arkiv archive with a README is automatically longecho-compliant.
+The two axes are orthogonal. A solution that addresses only time (a box of plain files) is useless for complexity. A solution that addresses only complexity (a cloud-hosted relational database) is useless for time. arkiv and longecho together address both without compromising either.
 
-## Toolkit Output Convention
+## 4.2 The Durability Stack
 
-Source toolkits that produce arkiv archives SHOULD export as:
+An arkiv archive, viewed as a durability stack, has layers that can be peeled away as tooling disappears:
+
+```
+Layer 5: LLM interface      (arkiv MCP server + language model)
+Layer 4: SQL query layer    (arkiv SQLite + JSON1 extension)
+Layer 3: Data dictionary    (arkiv schema.yaml)
+Layer 2: Structured records (arkiv JSONL files)
+Layer 1: Self-description   (longecho README.md)
+Layer 0: Plain files        (text editor, file browser, human eyes)
+```
+
+Each layer is independently functional and regenerable from the layer beneath. Losing the top layer does not compromise the ones below. Layer 0 is the substrate: if it survives, everything else can be rebuilt.
+
+**Regenerability principle.** Every layer above Layer 0 MUST be regenerable from the directory form (README.md plus schema.yaml plus JSONL files). The SQLite database is derived; the MCP server is derived; the schema dictionary is derived. This means the directory form is the only thing that needs backup, version control, or long-term preservation.
+
+## 4.3 Ecosystem Roles
+
+The arkiv ecosystem distributes responsibility across four role types:
+
+### Source toolkits (producers)
+
+Source toolkits extract data from application-specific silos and write arkiv-compliant directories. Each toolkit understands the idiosyncrasies of one silo; none of them need to know about longecho directly, as long as they produce valid JSONL, a README.md, and a schema.yaml.
+
+Current producers:
+
+| Toolkit | Source | Output |
+|---------|--------|--------|
+| `memex` | Conversations (ChatGPT, Claude, etc.) | arkiv directory |
+| `mtk` | Email | arkiv directory |
+| `btk` | Bookmarks | arkiv directory |
+| `ptk` | Photos | arkiv directory |
+| `ebk` | Ebooks, reading notes | arkiv directory |
+| `repoindex` | Git repositories | arkiv directory |
+| `chartfold` | Health data | arkiv directory |
+
+A compliant producer SHOULD emit:
 
 ```
 toolkit-export/
-├── README.md           # Self-describing (YAML frontmatter)
+├── README.md           # Self-describing (YAML frontmatter with generator field)
 ├── schema.yaml         # Data dictionary (curatable)
-├── collection.jsonl    # Universal record format (human-readable, durable)
-└── collection.db       # Optional: SQLite query layer (regenerable)
+├── collection.jsonl    # Records in arkiv format
+└── collection.db       # Optional SQLite view (regenerable, convenience only)
 ```
 
-## Related Projects
+### arkiv (interchange format and query layer)
 
-### Input sources (toolkit ecosystem)
-
-- **memex** -- Conversations (ChatGPT, Claude, etc.)
-- **mtk** -- Email
-- **btk** -- Bookmarks
-- **ptk** -- Photos
-- **ebk** -- Ebooks and reading notes
-- **repoindex** -- Git repositories
-- **chartfold** -- Health data
+arkiv defines the record format, the archive directory layout, and the schema discovery algorithm. The reference implementation provides import/export, a SQL query layer, and an MCP server. arkiv does not own the data; it provides structural access to it.
 
 ### Consumers
 
-- **longshade** -- Packages arkiv data as a conversable persona
-- **Any analytics/visualization tool** -- Query the SQLite directly
-- **Any LLM** -- Via MCP server
+Consumers read arkiv archives and do something specific with them:
 
-### Compliance
+| Consumer | Role |
+|----------|------|
+| `longshade` | Package an arkiv archive as a conversable persona |
+| Analytics / visualization tools | Query the SQLite database directly |
+| Any LLM with MCP support | Query via the arkiv MCP server |
 
-- **longecho** -- longecho compliance validator
+A consumer SHOULD depend on the arkiv format, not on the arkiv Python library. The format is the stable contract.
 
-## Privacy and Encryption
+### longecho (compliance and navigation)
+
+longecho treats the archive directory as its unit of work. It does not parse records or understand the schema. Its responsibilities:
+
+1. **Validation.** `longecho check` verifies that a directory is self-describing (has a README) and composed of durable formats. An arkiv archive with a README passes this check automatically.
+2. **Discovery.** `longecho query` walks a directory tree and finds all compliant sources. This lets a user navigate a whole collection of archives without centralized indexing.
+3. **Static site generation.** `longecho build` generates a single-file HTML app (`site/index.html`) that presents the archive's structure and content for browser-based reading. This is a secondary degradation layer: if the arkiv Python library is unavailable but a browser is, the generated site still works.
+
+longecho does not require arkiv, and arkiv does not require longecho. Their composition is structural: both read and write the same directory form.
+
+## 4.4 Relationship to longecho
+
+An arkiv archive is longecho-compliant by construction:
+
+- The exported `README.md` satisfies longecho's self-description requirement.
+- `schema.yaml`, the `*.jsonl` files, and the optional SQLite database are all in longecho's durable formats list (`.yaml`, `.jsonl`, `.db`).
+- The rendered schema tables in the README body are plain markdown, readable without any tooling.
+- Nested export (`--nested`) produces a fractal structure that longecho's recursive discovery handles natively.
+
+The relationship is composition without coupling:
+
+- arkiv does not depend on the longecho library or CLI.
+- longecho does not depend on the arkiv library or CLI.
+- Each project would continue to function if the other disappeared.
+- Their output interoperates because both treat the archive directory as the canonical form.
+
+## 4.5 Privacy and Encryption
 
 arkiv archives contain personal data. Standard encryption over a compressed archive is the recommended approach:
 
@@ -512,7 +565,14 @@ tar czf archive.tar.gz README.md schema.yaml *.jsonl media/
 gpg --symmetric --cipher-algo AES256 archive.tar.gz    # or: age -p archive.tar.gz > archive.tar.gz.age
 ```
 
-This preserves the full degradation chain: decrypt → decompress → plaintext JSONL.
+This preserves the full degradation chain: decrypt, decompress, plaintext JSONL. The encryption step does not compromise any layer of the durability stack; it is a wrapper over the substrate (Layer 0).
+
+Alternative approaches:
+
+- **pagevault** wraps an arkiv archive in a password-protected static HTML viewer for browsable sharing. Less durable than GPG (requires a browser and JavaScript) but more convenient for sharing with people who will not run command-line tools.
+- Filesystem-level encryption (LUKS, FileVault, BitLocker) covers the archive transparently without changing its structure.
+
+The choice depends on who you are protecting the archive from and how it will be accessed.
 
 ---
 

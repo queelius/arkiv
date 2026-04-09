@@ -60,6 +60,7 @@ Read-only by default. Start with `arkiv mcp --writable db` to enable the write t
 - Any LLM can query it via MCP
 - JSONL is human-readable and durable. SQLite is the most deployed database in history.
 
-## Spec
+## Spec and philosophy
 
-See [SPEC.md](SPEC.md) for the full technical specification.
+- [SPEC.md](SPEC.md): full technical specification
+- [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md): why arkiv exists and how it composes with [longecho](https://github.com/queelius/longecho)
