@@ -132,12 +132,14 @@ class TestCLI:
 
     # --- helpful errors for JSONL on DB-only commands ---
 
-    def test_query_jsonl_suggests_import(self, tmp_path):
+    def test_query_jsonl_auto_creates_db(self, tmp_path):
+        """Querying a JSONL file auto-creates a sibling .db and returns results."""
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "hello"}\n')
         result = run_arkiv("query", str(f), "SELECT content FROM records")
-        assert result.returncode == 1
-        assert "import" in result.stderr.lower()
+        assert result.returncode == 0
+        assert "hello" in result.stdout
+        assert (tmp_path / "test.db").exists()
 
     def test_export_jsonl_suggests_import(self, tmp_path):
         f = tmp_path / "test.jsonl"
@@ -398,3 +400,72 @@ class TestCLI:
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert "schema_info" not in data
+
+
+class TestAutoCreateDb:
+    """arkiv query and arkiv mcp accept directories and JSONL files,
+    auto-creating arkiv.db on first use."""
+
+    def test_query_directory_auto_creates_arkiv_db(self, tmp_path):
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "data.jsonl").write_text('{"content": "hello"}\n')
+        (archive / "README.md").write_text(
+            "---\nname: Test\ncontents:\n- path: data.jsonl\n---\n"
+        )
+
+        result = run_arkiv("query", str(archive), "SELECT content FROM records")
+        assert result.returncode == 0
+        assert "hello" in result.stdout
+        assert (archive / "arkiv.db").exists()
+
+    def test_query_directory_reuses_existing_db(self, tmp_path):
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "data.jsonl").write_text('{"content": "first"}\n')
+        (archive / "README.md").write_text(
+            "---\nname: Test\ncontents:\n- path: data.jsonl\n---\n"
+        )
+
+        # First query creates the db
+        run_arkiv("query", str(archive), "SELECT content FROM records")
+
+        # Modify the JSONL (db is now stale, but we don't auto-refresh)
+        (archive / "data.jsonl").write_text('{"content": "second"}\n')
+
+        # Second query uses existing db (returns old data)
+        result = run_arkiv("query", str(archive), "SELECT content FROM records")
+        assert result.returncode == 0
+        assert "first" in result.stdout
+
+    def test_query_directory_no_readme_imports_all_jsonl(self, tmp_path):
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "a.jsonl").write_text('{"content": "alpha"}\n')
+        (archive / "b.jsonl").write_text('{"content": "beta"}\n')
+
+        result = run_arkiv(
+            "query", str(archive), "SELECT content FROM records ORDER BY content"
+        )
+        assert result.returncode == 0
+        assert "alpha" in result.stdout
+        assert "beta" in result.stdout
+
+    def test_query_single_jsonl_auto_creates_db(self, tmp_path):
+        f = tmp_path / "notes.jsonl"
+        f.write_text('{"content": "remember this"}\n')
+
+        result = run_arkiv("query", str(f), "SELECT content FROM records")
+        assert result.returncode == 0
+        assert "remember this" in result.stdout
+        assert (tmp_path / "notes.db").exists()
+
+    def test_query_db_file_still_works(self, tmp_path):
+        """Passing a .db file directly continues to work as before."""
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        db_path = tmp_path / "my.db"
+        run_arkiv("import", str(f), "--db", str(db_path))
+        result = run_arkiv("query", str(db_path), "SELECT content FROM records")
+        assert result.returncode == 0
+        assert "hello" in result.stdout

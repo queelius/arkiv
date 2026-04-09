@@ -84,12 +84,43 @@ def cmd_schema(args):
     print(json.dumps(output, indent=2))
 
 
-def cmd_query(args):
-    """Run a SQL query against the database."""
+def _resolve_db(path_str, writable=False):
+    """Resolve a path to a Database, auto-creating if input is a directory or JSONL file."""
     from .database import Database
 
-    _require_db(args.db, "query")
-    db = Database(args.db, read_only=True)
+    path = Path(path_str)
+    if path.is_dir():
+        db_path = path / "arkiv.db"
+        if not db_path.exists():
+            db = Database(db_path)
+            readme = path / "README.md"
+            if readme.exists():
+                db.import_readme(readme)
+            else:
+                for jsonl in sorted(path.glob("*.jsonl")):
+                    db.import_jsonl(jsonl)
+            if not writable:
+                db.close()
+                return Database(db_path, read_only=True)
+            return db
+        return Database(db_path, read_only=not writable)
+    elif path.suffix == ".jsonl":
+        db_path = path.with_suffix(".db")
+        if not db_path.exists():
+            db = Database(db_path)
+            db.import_jsonl(path)
+            if not writable:
+                db.close()
+                return Database(db_path, read_only=True)
+            return db
+        return Database(db_path, read_only=not writable)
+    else:
+        return Database(path, read_only=not writable)
+
+
+def cmd_query(args):
+    """Run a SQL query against the database."""
+    db = _resolve_db(args.db)
     results = db.query(args.sql)
     db.close()
     print(json.dumps(results, indent=2, default=str))
@@ -295,7 +326,10 @@ def cmd_mcp(args):
     """Start the MCP server."""
     from .server import run_mcp_server
 
-    run_mcp_server(db_path=args.db, writable=getattr(args, 'writable', False))
+    writable = getattr(args, 'writable', False)
+    db = _resolve_db(args.db, writable=writable)
+    run_mcp_server(db_path=str(db.path), writable=writable)
+    db.close()
 
 
 def main():
