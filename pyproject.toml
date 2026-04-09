@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arkiv"
-version = "0.1.1"
+version = "0.1.2"
 description = "Universal personal data format. JSONL in, SQL out, MCP to LLMs."
 requires-python = ">=3.8"
 license = {text = "MIT"}
