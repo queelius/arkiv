@@ -9,7 +9,10 @@ from . import __version__
 
 
 def cmd_import(args):
-    """Import JSONL, README.md, or directory into a SQLite database."""
+    """Import JSONL, README.md, directory, or packed bundle into a DB."""
+    import tempfile
+
+    from .bundle import is_bundle, unpack_bundle
     from .database import Database
 
     input_path = Path(args.input)
@@ -17,6 +20,32 @@ def cmd_import(args):
     if input_path.suffix == ".db":
         print(f"Error: {input_path} is a database file, not a data file", file=sys.stderr)
         sys.exit(1)
+
+    # Packed bundle (.zip / .tar.gz / .tgz): extract into a tempdir, then
+    # import from the extracted directory. The tempdir is cleaned up on exit.
+    if is_bundle(input_path):
+        with tempfile.TemporaryDirectory(prefix="arkiv-unpack-") as tmp:
+            unpack_bundle(input_path, Path(tmp))
+            db = Database(args.db)
+            try:
+                readme_path = Path(tmp) / "README.md"
+                if readme_path.exists():
+                    count = db.import_readme(readme_path)
+                    print(
+                        f"Imported {count} records from {input_path.name} "
+                        f"(extracted README.md)"
+                    )
+                else:
+                    total = 0
+                    for jsonl in sorted(Path(tmp).glob("*.jsonl")):
+                        total += db.import_jsonl(jsonl)
+                    print(
+                        f"Imported {total} records from {input_path.name} "
+                        f"(extracted *.jsonl, no README.md)"
+                    )
+            finally:
+                db.close()
+        return
 
     db = Database(args.db)
     try:
@@ -55,10 +84,32 @@ def _require_db(path, command):
 
 
 def cmd_export(args):
-    """Export SQLite database to JSONL files + README.md + schema.yaml."""
+    """Export SQLite database to a directory or a packed bundle.
+
+    When *output* ends in ``.zip``, ``.tar.gz``, or ``.tgz``, the database
+    is exported to a tempdir and then packed into that bundle. Otherwise
+    the export goes directly to *output* as a directory.
+    """
+    import tempfile
+
+    from .bundle import is_bundle, pack_bundle
     from .database import Database
 
     _require_db(args.db, "export")
+
+    if is_bundle(args.output):
+        with tempfile.TemporaryDirectory(prefix="arkiv-export-") as tmp:
+            db = Database(args.db, read_only=True)
+            try:
+                db.export(
+                    tmp, nested=args.nested, since=args.since, until=args.until
+                )
+            finally:
+                db.close()
+            pack_bundle(Path(tmp), Path(args.output))
+        print(f"Exported to {args.output}")
+        return
+
     db = Database(args.db, read_only=True)
     db.export(args.output, nested=args.nested, since=args.since, until=args.until)
     db.close()
@@ -85,10 +136,32 @@ def cmd_schema(args):
 
 
 def _resolve_db(path_str, writable=False):
-    """Resolve a path to a Database, auto-creating if input is a directory or JSONL file."""
+    """Resolve a path to a Database.
+
+    - ``.db``         → open directly
+    - directory       → auto-create ``arkiv.db`` by importing README.md or
+      any ``*.jsonl`` found inside
+    - ``.jsonl``      → auto-create sibling ``.db`` importing from the file
+    - ``.zip`` / ``.tar.gz`` / ``.tgz`` → extract to sibling dir named after
+      the bundle, then resolve as a directory
+    """
+    from .bundle import is_bundle, unpack_bundle
     from .database import Database
 
     path = Path(path_str)
+
+    if is_bundle(path):
+        # Sibling extracted directory: /foo/bar.zip → /foo/bar/
+        stem = path.name
+        for ext in (".tar.gz", ".tgz", ".zip"):
+            if stem.lower().endswith(ext):
+                stem = stem[: -len(ext)]
+                break
+        extracted = path.parent / stem
+        if not extracted.exists():
+            unpack_bundle(path, extracted)
+        path = extracted
+
     if path.is_dir():
         db_path = path / "arkiv.db"
         if not db_path.exists():
@@ -344,8 +417,14 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     # import
-    p_import = subparsers.add_parser("import", help="Import JSONL, README.md, or directory")
-    p_import.add_argument("input", help="JSONL file, README.md, or directory")
+    p_import = subparsers.add_parser(
+        "import",
+        help="Import JSONL, README.md, directory, or .zip/.tar.gz bundle",
+    )
+    p_import.add_argument(
+        "input",
+        help="JSONL file, README.md, directory, or .zip/.tar.gz bundle",
+    )
     p_import.add_argument(
         "--db", default="archive.db", help="SQLite database path"
     )
@@ -353,11 +432,14 @@ def main():
 
     # export
     p_export = subparsers.add_parser(
-        "export", help="Export database to JSONL + README.md + schema.yaml"
+        "export",
+        help="Export database to a directory or .zip/.tar.gz bundle",
     )
     p_export.add_argument("db", help="SQLite database path")
     p_export.add_argument(
-        "--output", default="./exported", help="Output directory"
+        "--output",
+        default="./exported",
+        help="Output directory, or a .zip/.tar.gz/.tgz path to produce a bundle",
     )
     p_export.add_argument("--nested", action="store_true", help="Create subdirectory per collection")
     p_export.add_argument("--since", help="Include records from this ISO 8601 date")

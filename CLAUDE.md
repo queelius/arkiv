@@ -7,8 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Universal personal data format with two interconvertible forms (directory and database) plus an MCP server.
 
 - **Directory form** is README.md + schema.yaml + *.jsonl (human-readable, portable, git-friendly)
+- **Bundle form** is that directory packed as `.zip` or `.tar.gz`: a single-file shipping container for the directory form, with no schema change. `arkiv import` / `arkiv export` auto-detect bundles from extension.
 - **Database form** is a single SQLite file (queryable, efficient, JSON1 extension)
-- The two forms are peers. In normal use they stay in sync via import/export. If they diverge, the directory form is authoritative.
+- The three forms are peers. In normal use they stay in sync via import/export. If they diverge, the directory form is authoritative.
 - **MCP server** exposes 3 read-only tools by default (`get_manifest`, `get_schema`, `sql_query`), plus `write_record` when started with `--writable`
 
 ## What arkiv Is NOT
