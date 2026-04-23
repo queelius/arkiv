@@ -142,6 +142,25 @@ These properties are why the spec says "if they diverge, the directory form is a
 
 ---
 
+## Bundles are transport, not a third form
+
+An arkiv archive may be packed into a `.zip` or `.tar.gz` for transport or storage. This is a serialization of the directory form, not a separate representation. There is no "bundle form" in the durability stack. A packed bundle is simply a directory form that has been compressed for shipping.
+
+**Bundles are for transport. Directories are for working.** To operate on a bundle, you unpack it first. To share a directory, you pack it. This is how every other archive format works in computing (tar, deb, rpm, docker images): the archive is the shipping container, and work happens on the extracted contents.
+
+This has concrete consequences for the arkiv CLI:
+
+- `arkiv import bundle.zip --db archive.db` works, because import is an explicit conversion operation. The tool transparently unpacks to a temporary directory, imports, and discards the tempdir. The bundle is "consumed" into the database form.
+- `arkiv export archive.db bundle.zip` works for the same reason. Export is explicit conversion; the tool exports to a tempdir, packs, and discards.
+- `arkiv query bundle.zip "..."` does **not** work. Query asks the tool to *operate* on the archive, and operating on a packed bundle is not a thing. The user gets a clear error: "bundle.zip is a packed bundle, not a working archive. Unpack first."
+- Same for `arkiv mcp bundle.zip` and any other read or write operation.
+
+**Why not auto-extract for convenience?** Auto-extracting on every read would encode an implicit opinion about how bundles should be unpacked (sibling directory? tempdir? named what?) that belongs to the user, not the tool. It would also create lingering extracted directories the user didn't ask for and has to manage. The principle "bundles are for transport" is cleaner and more honest: the format has two forms (directory and database), plus a serialization (bundle). You opt into the serialization when you ship, and opt out of it when you work.
+
+This also matches longecho's stance: longecho recognizes `.zip`, `.gz`, and `.tgz` as durable formats for compliance purposes, but does not extract, traverse, or inspect their contents. A bundle is an opaque durable artifact to longecho. The two projects agree: bundles are shipping containers, not working formats.
+
+---
+
 ## Trust the future
 
 longecho has an unusual design principle: "trust the future". The idea is that we should not over-engineer our archives because *future humans and future LLMs will be smarter than we are*. Writing a precise, rigid schema today is probably a mistake, because it encodes assumptions about how you (and others) will want to query the data, assumptions that will age poorly.

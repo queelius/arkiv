@@ -469,3 +469,56 @@ class TestAutoCreateDb:
         result = run_arkiv("query", str(db_path), "SELECT content FROM records")
         assert result.returncode == 0
         assert "hello" in result.stdout
+
+
+class TestBundleNotAutoExtracted:
+    """Bundles are transport containers. query and mcp do not auto-extract.
+    The user must unpack first via import or convert."""
+
+    def _seed_bundle(self, tmp_path, name="archive.zip"):
+        """Create a simple .zip bundle with a valid arkiv archive inside."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "data.jsonl").write_text('{"content": "inside bundle"}\n')
+        (src / "README.md").write_text(
+            "---\nname: Test\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        bundle = tmp_path / name
+        from arkiv.bundle import pack_bundle
+        pack_bundle(src, bundle)
+        # Remove the source dir so we only have the bundle
+        import shutil
+        shutil.rmtree(src)
+        return bundle
+
+    def test_query_zip_rejected_with_helpful_error(self, tmp_path):
+        bundle = self._seed_bundle(tmp_path, "archive.zip")
+        result = run_arkiv("query", str(bundle), "SELECT content FROM records")
+        assert result.returncode == 1
+        assert "packed bundle" in result.stderr.lower()
+        assert "unpack" in result.stderr.lower() or "import" in result.stderr.lower()
+        # Verify no sibling directory was silently created
+        assert not (tmp_path / "archive").exists()
+
+    def test_query_tar_gz_rejected(self, tmp_path):
+        bundle = self._seed_bundle(tmp_path, "archive.tar.gz")
+        result = run_arkiv("query", str(bundle), "SELECT content FROM records")
+        assert result.returncode == 1
+        assert "packed bundle" in result.stderr.lower()
+
+    def test_mcp_zip_rejected(self, tmp_path):
+        bundle = self._seed_bundle(tmp_path, "archive.zip")
+        result = run_arkiv("mcp", str(bundle))
+        assert result.returncode == 1
+        assert "packed bundle" in result.stderr.lower()
+
+    def test_import_zip_still_works(self, tmp_path):
+        """import is an explicit conversion, so bundle unpack is appropriate."""
+        bundle = self._seed_bundle(tmp_path, "archive.zip")
+        db_path = tmp_path / "archive.db"
+        result = run_arkiv("import", str(bundle), "--db", str(db_path))
+        assert result.returncode == 0
+        # Query the resulting db normally
+        query_result = run_arkiv("query", str(db_path), "SELECT content FROM records")
+        assert query_result.returncode == 0
+        assert "inside bundle" in query_result.stdout

@@ -142,25 +142,24 @@ def _resolve_db(path_str, writable=False):
     - directory       → auto-create ``arkiv.db`` by importing README.md or
       any ``*.jsonl`` found inside
     - ``.jsonl``      → auto-create sibling ``.db`` importing from the file
-    - ``.zip`` / ``.tar.gz`` / ``.tgz`` → extract to sibling dir named after
-      the bundle, then resolve as a directory
+
+    Bundles (``.zip`` / ``.tar.gz`` / ``.tgz``) are NOT auto-extracted.
+    Bundles are transport containers; to operate on them, unpack first via
+    ``arkiv convert bundle.zip ./archive/`` (or ``arkiv import``/``export``,
+    which handle bundles transparently as explicit conversion operations).
     """
-    from .bundle import is_bundle, unpack_bundle
+    from .bundle import is_bundle
     from .database import Database
 
     path = Path(path_str)
 
     if is_bundle(path):
-        # Sibling extracted directory: /foo/bar.zip → /foo/bar/
-        stem = path.name
-        for ext in (".tar.gz", ".tgz", ".zip"):
-            if stem.lower().endswith(ext):
-                stem = stem[: -len(ext)]
-                break
-        extracted = path.parent / stem
-        if not extracted.exists():
-            unpack_bundle(path, extracted)
-        path = extracted
+        raise ValueError(
+            f"{path.name} is a packed bundle, not a working archive.\n"
+            f"Bundles are transport containers. To work with the contents, unpack first:\n"
+            f"  arkiv import {path.name} --db archive.db\n"
+            f"Then query archive.db, or unpack to a directory and work with that."
+        )
 
     if path.is_dir():
         db_path = path / "arkiv.db"

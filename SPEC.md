@@ -484,6 +484,8 @@ Each layer is independently functional and regenerable from the layer beneath. L
 
 **Regenerability principle.** The directory form and the database form are isomorphic: each can regenerate the other losslessly via `arkiv import` and `arkiv export`. Neither is a cache of the other. However, the directory form is authoritative on divergence because it is human-inspectable, git-diffable, and editable without tooling. Every layer above the directory form MUST be regenerable from it. See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) for the full rationale.
 
+**Bundles are transport, not a new layer.** A `.zip` or `.tar.gz` of the directory form is a serialization for shipping, not a third representation. Packed bundles sit alongside Layer 0 as a transport wrapper. Read and write operations (`query`, `mcp`) do NOT auto-extract bundles; they reject packed inputs with a clear error message directing the user to unpack first. Explicit conversion operations (`import`, `export`, `convert`) transparently pack/unpack because packing/unpacking is what the user asked for. This keeps the "bundles are shipping containers" principle honest: you opt into serialization when you ship, and opt out when you work.
+
 ## 4.3 Ecosystem Roles
 
 The arkiv ecosystem distributes responsibility across four role types:
