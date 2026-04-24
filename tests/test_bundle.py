@@ -125,50 +125,50 @@ def _seed_db(tmp_path):
         '{"content": "two", "metadata": {"color": "blue"}}\n'
     )
     db = tmp_path / "seed.db"
-    run_arkiv("import", str(jsonl), "--db", str(db))
+    run_arkiv("convert", str(jsonl), str(db))
     return db
 
 
 class TestCliExportBundle:
-    def test_export_to_zip(self, tmp_path):
+    def test_convert_db_to_zip(self, tmp_path):
         db = _seed_db(tmp_path)
         out = tmp_path / "archive.zip"
-        result = run_arkiv("export", str(db), "--output", str(out))
+        result = run_arkiv("convert", str(db), str(out))
         assert result.returncode == 0, result.stderr
         assert out.exists()
         with zipfile.ZipFile(out) as zf:
             names = set(zf.namelist())
         assert "README.md" in names
 
-    def test_export_to_tar_gz(self, tmp_path):
+    def test_convert_db_to_tar_gz(self, tmp_path):
         db = _seed_db(tmp_path)
         out = tmp_path / "archive.tar.gz"
-        result = run_arkiv("export", str(db), "--output", str(out))
+        result = run_arkiv("convert", str(db), str(out))
         assert result.returncode == 0, result.stderr
         assert out.exists()
         with tarfile.open(out, "r:gz") as tf:
             names = {m.name for m in tf.getmembers()}
         assert "README.md" in names
 
-    def test_export_directory_unchanged(self, tmp_path):
+    def test_convert_db_to_directory(self, tmp_path):
         """Non-bundle output still works as a plain directory."""
         db = _seed_db(tmp_path)
         out = tmp_path / "plain_dir"
-        result = run_arkiv("export", str(db), "--output", str(out))
+        result = run_arkiv("convert", str(db), str(out))
         assert result.returncode == 0, result.stderr
         assert out.is_dir()
         assert (out / "README.md").is_file()
 
 
 class TestCliImportBundle:
-    def test_import_zip(self, tmp_path):
-        # Seed DB → export to zip → re-import into a fresh DB
+    def test_convert_zip_to_db(self, tmp_path):
+        # Seed DB → convert to zip → re-convert into a fresh DB
         db_src = _seed_db(tmp_path)
         bundle = tmp_path / "round.zip"
-        run_arkiv("export", str(db_src), "--output", str(bundle))
+        run_arkiv("convert", str(db_src), str(bundle))
 
         db_dst = tmp_path / "round.db"
-        result = run_arkiv("import", str(bundle), "--db", str(db_dst))
+        result = run_arkiv("convert", str(bundle), str(db_dst))
         assert result.returncode == 0, result.stderr
         assert db_dst.exists()
 
@@ -178,13 +178,13 @@ class TestCliImportBundle:
         conn.close()
         assert count == 2
 
-    def test_import_tar_gz(self, tmp_path):
+    def test_convert_tar_gz_to_db(self, tmp_path):
         db_src = _seed_db(tmp_path)
         bundle = tmp_path / "round.tar.gz"
-        run_arkiv("export", str(db_src), "--output", str(bundle))
+        run_arkiv("convert", str(db_src), str(bundle))
 
         db_dst = tmp_path / "round.db"
-        result = run_arkiv("import", str(bundle), "--db", str(db_dst))
+        result = run_arkiv("convert", str(bundle), str(db_dst))
         assert result.returncode == 0, result.stderr
         conn = sqlite3.connect(str(db_dst))
         count = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]

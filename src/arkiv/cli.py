@@ -8,112 +8,151 @@ from pathlib import Path
 from . import __version__
 
 
-def cmd_import(args):
-    """Import JSONL, README.md, directory, or packed bundle into a DB."""
+_DB_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
+
+
+def _is_db_path(path: Path) -> bool:
+    """A path points at a database form if its extension says so."""
+    return path.suffix.lower() in _DB_EXTENSIONS
+
+
+def cmd_convert(args):
+    """Convert between the two arkiv archive forms.
+
+    Direction is auto-detected from the input:
+      - ``.db`` / ``.sqlite`` / ``.sqlite3``   → produce a directory
+      - directory, ``.jsonl``, ``.md``, bundle → produce a database
+
+    Output is optional:
+      - input directory, no output  → writes ``arkiv.db`` inside it
+      - input .db, no output        → writes directory at ``./exported/``
+
+    Output may be a bundle (``.zip`` / ``.tar.gz`` / ``.tgz``) when
+    producing a directory; the directory is built then packed.
+
+    Flags ``--nested`` / ``--since`` / ``--until`` apply only when
+    producing a directory.
+    """
     import tempfile
 
-    from .bundle import is_bundle, unpack_bundle
+    from .bundle import is_bundle, pack_bundle, unpack_bundle
     from .database import Database
 
     input_path = Path(args.input)
 
-    if input_path.suffix == ".db":
-        print(f"Error: {input_path} is a database file, not a data file", file=sys.stderr)
-        sys.exit(1)
+    nested = getattr(args, "nested", False)
+    since = getattr(args, "since", None)
+    until = getattr(args, "until", None)
 
-    # Packed bundle (.zip / .tar.gz / .tgz): extract into a tempdir, then
-    # import from the extracted directory. The tempdir is cleaned up on exit.
+    # DB → directory
+    if _is_db_path(input_path):
+        if not input_path.exists():
+            raise FileNotFoundError(f"Database not found: {input_path}")
+        output = Path(args.output) if args.output else Path("./exported")
+
+        if is_bundle(output):
+            with tempfile.TemporaryDirectory(prefix="arkiv-convert-") as tmp:
+                db = Database(input_path, read_only=True)
+                try:
+                    db.export(tmp, nested=nested, since=since, until=until)
+                finally:
+                    db.close()
+                pack_bundle(Path(tmp), output)
+            print(f"Converted {input_path.name} → {output}")
+            return
+
+        db = Database(input_path, read_only=True)
+        try:
+            db.export(output, nested=nested, since=since, until=until)
+        finally:
+            db.close()
+        print(f"Converted {input_path.name} → {output}")
+        return
+
+    # Directory / JSONL / README / bundle → DB
+    if any([nested, since, until]):
+        raise ValueError(
+            "--nested, --since, --until apply only when producing a "
+            "directory (converting a database to directory form). They "
+            "cannot be used when converting into a database."
+        )
+
+    # Decide output path
+    if args.output:
+        output = Path(args.output)
+        if not _is_db_path(output):
+            raise ValueError(
+                f"When converting into a database, output must be a "
+                f"database path (.db/.sqlite/.sqlite3), got: {output}"
+            )
+    elif input_path.is_dir():
+        output = input_path / "arkiv.db"
+    else:
+        raise ValueError(
+            "Output path is required when converting a file (JSONL, "
+            "README.md, or bundle) into a database. Usage: "
+            "arkiv convert INPUT OUTPUT.db"
+        )
+
+    # Bundle input: unpack to tempdir, import from there
     if is_bundle(input_path):
         with tempfile.TemporaryDirectory(prefix="arkiv-unpack-") as tmp:
             unpack_bundle(input_path, Path(tmp))
-            db = Database(args.db)
+            db = Database(output)
             try:
-                readme_path = Path(tmp) / "README.md"
-                if readme_path.exists():
-                    count = db.import_readme(readme_path)
-                    print(
-                        f"Imported {count} records from {input_path.name} "
-                        f"(extracted README.md)"
-                    )
+                readme = Path(tmp) / "README.md"
+                if readme.exists():
+                    count = db.import_readme(readme)
                 else:
-                    total = 0
-                    for jsonl in sorted(Path(tmp).glob("*.jsonl")):
-                        total += db.import_jsonl(jsonl)
-                    print(
-                        f"Imported {total} records from {input_path.name} "
-                        f"(extracted *.jsonl, no README.md)"
+                    count = sum(
+                        db.import_jsonl(j)
+                        for j in sorted(Path(tmp).glob("*.jsonl"))
                     )
             finally:
                 db.close()
+        print(f"Converted {input_path.name} → {output} ({count} records)")
         return
 
-    db = Database(args.db)
-    try:
-        if input_path.is_dir():
-            # Directory: look for README.md
-            readme_path = input_path / "README.md"
-            if readme_path.exists():
-                count = db.import_readme(readme_path)
-                print(f"Imported {count} records from README.md")
+    # Directory input
+    if input_path.is_dir():
+        readme = input_path / "README.md"
+        db = Database(output)
+        try:
+            if readme.exists():
+                count = db.import_readme(readme)
             else:
-                print(f"Error: No README.md found in {input_path}", file=sys.stderr)
-                sys.exit(1)
-        elif input_path.suffix == ".md":
+                count = sum(
+                    db.import_jsonl(j)
+                    for j in sorted(input_path.glob("*.jsonl"))
+                )
+                if count == 0:
+                    raise ValueError(
+                        f"Directory has no README.md and no .jsonl files: "
+                        f"{input_path}"
+                    )
+        finally:
+            db.close()
+        print(f"Converted {input_path} → {output} ({count} records)")
+        return
+
+    # Single file: README.md or JSONL
+    if input_path.suffix == ".md":
+        db = Database(output)
+        try:
             count = db.import_readme(input_path)
-            print(f"Imported {count} records from {input_path.name}")
-        else:
-            count = db.import_jsonl(input_path)
-            print(f"Imported {count} records from {input_path.name}")
+        finally:
+            db.close()
+        print(f"Converted {input_path.name} → {output} ({count} records)")
+        return
+
+    # Treat as JSONL
+    db = Database(output)
+    try:
+        count = db.import_jsonl(input_path)
     finally:
         db.close()
+    print(f"Converted {input_path.name} → {output} ({count} records)")
 
-
-def _require_db(path, command):
-    """Check that path looks like a database, not JSONL."""
-    p = Path(path)
-    if p.suffix in (".jsonl", ".json"):
-        name = p.name
-        print(
-            f"Error: {name} is a JSONL file, not a SQLite database.\n"
-            f"Import it first:\n"
-            f"  arkiv import {name} --db archive.db\n"
-            f"  arkiv {command} archive.db ...",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-
-def cmd_export(args):
-    """Export SQLite database to a directory or a packed bundle.
-
-    When *output* ends in ``.zip``, ``.tar.gz``, or ``.tgz``, the database
-    is exported to a tempdir and then packed into that bundle. Otherwise
-    the export goes directly to *output* as a directory.
-    """
-    import tempfile
-
-    from .bundle import is_bundle, pack_bundle
-    from .database import Database
-
-    _require_db(args.db, "export")
-
-    if is_bundle(args.output):
-        with tempfile.TemporaryDirectory(prefix="arkiv-export-") as tmp:
-            db = Database(args.db, read_only=True)
-            try:
-                db.export(
-                    tmp, nested=args.nested, since=args.since, until=args.until
-                )
-            finally:
-                db.close()
-            pack_bundle(Path(tmp), Path(args.output))
-        print(f"Exported to {args.output}")
-        return
-
-    db = Database(args.db, read_only=True)
-    db.export(args.output, nested=args.nested, since=args.since, until=args.until)
-    db.close()
-    print(f"Exported to {args.output}")
 
 
 def cmd_schema(args):
@@ -145,8 +184,8 @@ def _resolve_db(path_str, writable=False):
 
     Bundles (``.zip`` / ``.tar.gz`` / ``.tgz``) are NOT auto-extracted.
     Bundles are transport containers; to operate on them, unpack first via
-    ``arkiv convert bundle.zip ./archive/`` (or ``arkiv import``/``export``,
-    which handle bundles transparently as explicit conversion operations).
+    ``arkiv convert bundle.zip ./archive/`` (or ``arkiv convert bundle.zip
+    archive.db`` to go straight to a database).
     """
     from .bundle import is_bundle
     from .database import Database
@@ -157,8 +196,8 @@ def _resolve_db(path_str, writable=False):
         raise ValueError(
             f"{path.name} is a packed bundle, not a working archive.\n"
             f"Bundles are transport containers. To work with the contents, unpack first:\n"
-            f"  arkiv import {path.name} --db archive.db\n"
-            f"Then query archive.db, or unpack to a directory and work with that."
+            f"  arkiv convert {path.name} archive.db\n"
+            f"Then query archive.db, or convert to a directory and work with that."
         )
 
     if path.is_dir():
@@ -415,35 +454,44 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command")
 
-    # import
-    p_import = subparsers.add_parser(
-        "import",
-        help="Import JSONL, README.md, directory, or .zip/.tar.gz bundle",
+    # convert
+    p_convert = subparsers.add_parser(
+        "convert",
+        help=(
+            "Convert between arkiv forms. Direction is auto-detected: "
+            ".db input produces a directory (or bundle); any other input "
+            "produces a database."
+        ),
     )
-    p_import.add_argument(
+    p_convert.add_argument(
         "input",
-        help="JSONL file, README.md, directory, or .zip/.tar.gz bundle",
+        help=(
+            "Input path: directory, .jsonl, README.md, "
+            ".db/.sqlite/.sqlite3, or .zip/.tar.gz/.tgz bundle"
+        ),
     )
-    p_import.add_argument(
-        "--db", default="archive.db", help="SQLite database path"
+    p_convert.add_argument(
+        "output",
+        nargs="?",
+        help=(
+            "Output path. Defaults: input dir → INPUT/arkiv.db; "
+            "input .db → ./exported/"
+        ),
     )
-    p_import.set_defaults(func=cmd_import)
-
-    # export
-    p_export = subparsers.add_parser(
-        "export",
-        help="Export database to a directory or .zip/.tar.gz bundle",
+    p_convert.add_argument(
+        "--nested",
+        action="store_true",
+        help="When producing a directory: one subdirectory per collection",
     )
-    p_export.add_argument("db", help="SQLite database path")
-    p_export.add_argument(
-        "--output",
-        default="./exported",
-        help="Output directory, or a .zip/.tar.gz/.tgz path to produce a bundle",
+    p_convert.add_argument(
+        "--since",
+        help="When producing a directory: include records from this ISO 8601 date",
     )
-    p_export.add_argument("--nested", action="store_true", help="Create subdirectory per collection")
-    p_export.add_argument("--since", help="Include records from this ISO 8601 date")
-    p_export.add_argument("--until", help="Include records through this ISO 8601 date")
-    p_export.set_defaults(func=cmd_export)
+    p_convert.add_argument(
+        "--until",
+        help="When producing a directory: include records through this ISO 8601 date",
+    )
+    p_convert.set_defaults(func=cmd_convert)
 
     # schema
     p_schema = subparsers.add_parser(

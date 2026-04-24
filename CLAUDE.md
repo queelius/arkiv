@@ -7,16 +7,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Universal personal data format with two interconvertible forms (directory and database) plus an MCP server.
 
 - **Directory form** is README.md + schema.yaml + *.jsonl (human-readable, portable, git-friendly)
-- **Bundle form** is that directory packed as `.zip` or `.tar.gz`: a single-file shipping container for the directory form, with no schema change. `arkiv import` / `arkiv export` auto-detect bundles from extension.
 - **Database form** is a single SQLite file (queryable, efficient, JSON1 extension)
-- The three forms are peers. In normal use they stay in sync via import/export. If they diverge, the directory form is authoritative.
+- **Bundle form** is the directory packed as `.zip` or `.tar.gz`: a shipping container, not a working format. `arkiv convert` auto-detects and transparently packs or unpacks bundles through a tempdir. `arkiv query` and `arkiv mcp` reject bundles with a clear error (unpack first).
+- The directory and database forms are isomorphic peers. In normal use they stay in sync via `arkiv convert`. If they diverge, the directory form is authoritative.
 - **MCP server** exposes 3 read-only tools by default (`get_manifest`, `get_schema`, `sql_query`), plus `write_record` when started with `--writable`
 
 ## What arkiv Is NOT
 
 - Not a database -- it's a format with tooling
 - Not specific to personas -- longshade is one consumer, but arkiv is general-purpose
-- Not a replacement for SQL databases -- it's an interchange format that imports/exports to SQLite
+- Not a replacement for SQL databases -- it's an interchange format that converts between directory and SQLite forms
 
 ## Development Commands
 
@@ -24,7 +24,7 @@ Universal personal data format with two interconvertible forms (directory and da
 pip install -e ".[dev]"
 pytest                                              # all tests
 pytest tests/test_database.py -v                    # one test file
-pytest tests/test_cli.py::TestCLI::test_export -v   # single test
+pytest tests/test_cli.py::TestCLI::test_convert_db_to_dir -v   # single test
 pytest --cov=src/arkiv --cov-report=term-missing    # coverage
 black src/ tests/
 flake8 src/ tests/
@@ -83,13 +83,15 @@ Key behaviors:
 
 ### CLI (`cli.py`)
 
-Subcommands: `import`, `export`, `schema`, `query`, `info`, `detect`, `fix`, `mcp`.
+Subcommands: `convert`, `schema`, `query`, `info`, `detect`, `fix`, `mcp`.
+
+`convert` is bidirectional: auto-detects direction from the input type. A `.db`/`.sqlite`/`.sqlite3` input produces a directory (or bundle if the output ends in `.zip`/`.tar.gz`/`.tgz`); anything else (directory, `.jsonl`, `.md`, bundle) produces a database. Output is positional and optional: a directory input with no output writes `arkiv.db` inside the directory; a `.db` input with no output writes to `./exported/`. `query` and `mcp` accept directories and JSONL files too, auto-creating `arkiv.db` on demand.
 
 Key flags:
-- `export`: `--nested` (per-collection subdirectories with own README/schema), `--since`/`--until` (temporal slicing)
+- `convert`: `--nested` (per-collection subdirectories with own README/schema), `--since`/`--until` (temporal slicing). These only apply when producing a directory; using them with a database output is a hard error.
 - `mcp`: `--writable` (enable `write_record` tool for append-only inserts)
 
-Import routing: `.md` → `import_readme()`, directory → looks for `README.md`, everything else → `import_jsonl()`. The CLI uses lazy imports (`from .database import Database` inside functions) to keep startup fast.
+Input routing inside `cmd_convert` (when producing a database): `.md` → `import_readme()`, directory → looks for `README.md`, bundle → unpack to tempdir then import, else → `import_jsonl()`. The CLI uses lazy imports (`from .database import Database` inside functions) to keep startup fast.
 
 ### Export (`database.py` export method)
 

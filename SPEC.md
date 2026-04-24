@@ -431,7 +431,7 @@ Runs a read-only SQL query. Use `metadata->>'key'` or `json_extract(metadata, '$
 **Returns:** JSON object with the inserted record's `id`, `collection`, and `timestamp`.
 
 **Notes:**
-- The schema (`_schema` table) is NOT recomputed per write. It reflects the state at last import/export. Use `arkiv import` to refresh the schema after bulk writes.
+- The schema (`_schema` table) is NOT recomputed per write. It reflects the state at last conversion. Use `arkiv convert` to refresh the schema after bulk writes.
 - Collection names are validated (no path separators, no leading dot, no OS-reserved names).
 - Use `--writable` sparingly: the read-only default is the recommended deployment mode.
 
@@ -453,18 +453,22 @@ LLM: sql_query("SELECT content FROM records WHERE collection='conversations' AND
 ```bash
 pip install arkiv
 
-# Import
-arkiv import conversations.jsonl --db archive.db     # single JSONL file
-arkiv import README.md --db archive.db               # via README (imports contents, merges schema)
-arkiv import ./archive/ --db archive.db              # directory (auto-detects README.md)
+# Convert between forms (direction auto-detected from input type)
+arkiv convert conversations.jsonl archive.db         # JSONL → database
+arkiv convert README.md archive.db                   # README + siblings → database
+arkiv convert ./archive/ archive.db                  # directory → database
+arkiv convert ./archive/                             # refresh: writes arkiv.db inside
+arkiv convert archive.db ./exported/                 # database → directory
+arkiv convert archive.db                             # database → ./exported/
+arkiv convert archive.db ./out/ --nested             # per-collection subdirectories
+arkiv convert archive.db 2024/ --since 2024-01-01 --until 2024-12-31  # temporal slice
+arkiv convert archive.db bundle.zip                  # database → zipped bundle
+arkiv convert bundle.tar.gz archive.db               # bundle → database
 
-# Export
-arkiv export archive.db --output ./exported/         # JSONL + README.md + schema.yaml
-arkiv export archive.db --output ./out/ --nested     # per-collection subdirectories
-arkiv export archive.db --output 2024/ --since 2024-01-01 --until 2024-12-31  # temporal slice
-
-# Query and inspect
-arkiv query archive.db "SELECT ..."                  # SQL query
+# Query and inspect (directory and JSONL inputs auto-create arkiv.db on demand)
+arkiv query archive.db "SELECT ..."                  # SQL against database
+arkiv query ./archive/ "SELECT ..."                  # auto-creates arkiv.db, then queries
+arkiv query conversations.jsonl "SELECT ..."         # auto-creates sibling .db, then queries
 arkiv schema conversations.jsonl                     # print auto-discovered schema
 arkiv info archive.db                                # collection counts and overview
 
@@ -475,8 +479,16 @@ arkiv fix conversations.jsonl                        # fix known field misspelli
 
 # MCP server
 arkiv mcp archive.db                                 # start MCP server (read-only, stdio transport)
+arkiv mcp ./archive/                                 # auto-creates arkiv.db, then serves
 arkiv mcp --writable archive.db                      # enable write_record tool (append-only)
 ```
+
+**`convert` direction rules.** The direction is determined by the input type:
+
+- Input with extension `.db`, `.sqlite`, or `.sqlite3`: producing a directory (or a bundle if the output extension is `.zip`, `.tar.gz`, or `.tgz`).
+- Any other input (directory, `.jsonl`, `.md`, bundle): producing a database.
+
+The flags `--nested`, `--since`, `--until` apply only when producing a directory. Using them in the other direction produces a clear error.
 
 ---
 
@@ -508,7 +520,7 @@ Layer 0: Plain files        (text editor, file browser, human eyes)
 
 Each layer is independently functional and regenerable from the layer beneath. Losing the top layer does not compromise the ones below. Layer 0 is the substrate: if it survives, everything else can be rebuilt.
 
-**Regenerability principle.** The directory form and the database form are isomorphic: each can regenerate the other losslessly via `arkiv import` and `arkiv export`. Neither is a cache of the other. However, the directory form is authoritative on divergence because it is human-inspectable, git-diffable, and editable without tooling. Every layer above the directory form MUST be regenerable from it. See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) for the full rationale.
+**Regenerability principle.** The directory form and the database form are isomorphic: each can regenerate the other losslessly via `arkiv convert`. Neither is a cache of the other. However, the directory form is authoritative on divergence because it is human-inspectable, git-diffable, and editable without tooling. Every layer above the directory form MUST be regenerable from it. See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) for the full rationale.
 
 **Bundles are transport, not a new layer.** A `.zip` or `.tar.gz` of the directory form is a serialization for shipping, not a third representation. Packed bundles sit alongside Layer 0 as a transport wrapper. Read and write operations (`query`, `mcp`) do NOT auto-extract bundles; they reject packed inputs with a clear error message directing the user to unpack first. Explicit conversion operations (`import`, `export`, `convert`) transparently pack/unpack because packing/unpacking is what the user asked for. This keeps the "bundles are shipping containers" principle honest: you opt into serialization when you ship, and opt out when you work.
 

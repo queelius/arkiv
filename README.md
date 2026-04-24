@@ -15,30 +15,32 @@ Every record is a JSON object. All fields optional.
 ## The Stack
 
 ```
-JSONL files (canonical, portable, human-readable)
-    ↓ arkiv import
+JSONL directory (human-readable, portable, durable)
+       ⇅ arkiv convert
 SQLite database (queryable, efficient, standard SQL)
-    ↓ arkiv mcp
-MCP server (3 tools → any LLM)
-    ↑ arkiv export
+       ↓ arkiv mcp
+MCP server (tools → any LLM)
 ```
+
+The two forms (directory and database) are isomorphic peers. `arkiv convert`
+goes either direction, auto-detected from input type.
 
 ## Quick Start
 
 ```bash
 pip install arkiv
 
-# Import JSONL to SQLite
-arkiv import conversations.jsonl --db archive.db
+# Point at a directory and query. arkiv.db is auto-created on demand.
+arkiv query ./my-archive/ "SELECT content FROM records WHERE metadata->>'role' = 'user' LIMIT 5"
 
-# Query
-arkiv query archive.db "SELECT content FROM records WHERE metadata->>'role' = 'user' LIMIT 5"
+# Serve to any LLM via MCP
+arkiv mcp ./my-archive/
 
-# Export with temporal slicing
-arkiv export archive.db --output 2024/ --since 2024-01-01 --until 2024-12-31
-
-# Serve to LLMs via MCP
-arkiv mcp archive.db
+# Explicit conversion (either direction)
+arkiv convert conversations.jsonl archive.db              # JSONL → database
+arkiv convert archive.db ./exported/                      # database → directory
+arkiv convert archive.db 2024/ --since 2024-01-01         # temporal slice
+arkiv convert archive.db archive.zip                      # pack for transport
 ```
 
 ## MCP Tools

@@ -23,16 +23,15 @@ class TestCLI:
 
     def test_help(self):
         result = run_arkiv("--help")
-        assert "import" in result.stdout
-        assert "export" in result.stdout
+        assert "convert" in result.stdout
         assert "detect" in result.stdout
         assert "mcp" in result.stdout
 
-    def test_import_jsonl(self, tmp_path):
+    def test_convert_jsonl_to_db(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "hello"}\n')
         db_path = tmp_path / "test.db"
-        result = run_arkiv("import", str(f), "--db", str(db_path))
+        result = run_arkiv("convert", str(f), str(db_path))
         assert result.returncode == 0
         assert db_path.exists()
 
@@ -40,7 +39,7 @@ class TestCLI:
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "hello"}\n')
         db_path = tmp_path / "test.db"
-        run_arkiv("import", str(f), "--db", str(db_path))
+        run_arkiv("convert", str(f), str(db_path))
         result = run_arkiv(
             "query", str(db_path), "SELECT content FROM records"
         )
@@ -58,7 +57,7 @@ class TestCLI:
         f = tmp_path / "test.jsonl"
         f.write_text('{"metadata": {"role": "user"}}\n')
         db_path = tmp_path / "test.db"
-        run_arkiv("import", str(f), "--db", str(db_path))
+        run_arkiv("convert", str(f), str(db_path))
         result = run_arkiv("schema", str(db_path))
         assert result.returncode == 0
         assert "role" in result.stdout
@@ -67,17 +66,10 @@ class TestCLI:
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "a"}\n{"content": "b"}\n')
         db_path = tmp_path / "test.db"
-        run_arkiv("import", str(f), "--db", str(db_path))
+        run_arkiv("convert", str(f), str(db_path))
         result = run_arkiv("info", str(db_path))
         assert result.returncode == 0
         assert "2" in result.stdout
-
-    def test_import_db_file_rejected(self, tmp_path):
-        db_path = tmp_path / "test.db"
-        db_path.write_bytes(b"")
-        result = run_arkiv("import", str(db_path))
-        assert result.returncode == 1
-        assert "database file" in result.stderr.lower()
 
     def test_query_nonexistent_db(self, tmp_path):
         db_path = tmp_path / "nope.db"
@@ -98,12 +90,12 @@ class TestCLI:
         assert result.returncode == 1
         assert "Error" in result.stderr
 
-    def test_double_import_no_duplicates(self, tmp_path):
+    def test_double_convert_no_duplicates(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "hello"}\n')
         db_path = tmp_path / "test.db"
-        run_arkiv("import", str(f), "--db", str(db_path))
-        run_arkiv("import", str(f), "--db", str(db_path))
+        run_arkiv("convert", str(f), str(db_path))
+        run_arkiv("convert", str(f), str(db_path))
         result = run_arkiv(
             "query", str(db_path), "SELECT COUNT(*) as cnt FROM records"
         )
@@ -140,13 +132,6 @@ class TestCLI:
         assert result.returncode == 0
         assert "hello" in result.stdout
         assert (tmp_path / "test.db").exists()
-
-    def test_export_jsonl_suggests_import(self, tmp_path):
-        f = tmp_path / "test.jsonl"
-        f.write_text('{"content": "hello"}\n')
-        result = run_arkiv("export", str(f))
-        assert result.returncode == 1
-        assert "import" in result.stderr.lower()
 
     # --- detect command ---
 
@@ -253,19 +238,19 @@ class TestCLI:
         result = run_arkiv("--help")
         assert "mcp" in result.stdout
 
-    def test_export(self, tmp_path):
+    def test_convert_db_to_dir(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text('{"content": "hello"}\n')
         db_path = tmp_path / "test.db"
-        run_arkiv("import", str(f), "--db", str(db_path))
+        run_arkiv("convert", str(f), str(db_path))
         out = tmp_path / "exported"
-        result = run_arkiv("export", str(db_path), "--output", str(out))
+        result = run_arkiv("convert", str(db_path), str(out))
         assert result.returncode == 0
         assert (out / "test.jsonl").exists()
         assert (out / "README.md").exists()
         assert (out / "schema.yaml").exists()
 
-    def test_import_readme(self, tmp_path):
+    def test_convert_readme_to_db(self, tmp_path):
         (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
         readme_text = (
             "---\nname: Test\ncontents:\n- path: data.jsonl\n---\n# Test\n"
@@ -273,12 +258,12 @@ class TestCLI:
         (tmp_path / "README.md").write_text(readme_text)
         db_path = tmp_path / "test.db"
         result = run_arkiv(
-            "import", str(tmp_path / "README.md"), "--db", str(db_path)
+            "convert", str(tmp_path / "README.md"), str(db_path)
         )
         assert result.returncode == 0
         assert "1" in result.stdout
 
-    def test_import_directory(self, tmp_path):
+    def test_convert_directory_to_db(self, tmp_path):
         archive_dir = tmp_path / "archive"
         archive_dir.mkdir()
         (archive_dir / "data.jsonl").write_text('{"content": "hello"}\n')
@@ -288,22 +273,22 @@ class TestCLI:
         (archive_dir / "README.md").write_text(readme_text)
         db_path = tmp_path / "test.db"
         result = run_arkiv(
-            "import", str(archive_dir), "--db", str(db_path)
+            "convert", str(archive_dir), str(db_path)
         )
         assert result.returncode == 0
         assert "1" in result.stdout
 
-    def test_import_empty_directory(self, tmp_path):
+    def test_convert_empty_directory_fails(self, tmp_path):
         archive_dir = tmp_path / "archive"
         archive_dir.mkdir()
         db_path = tmp_path / "test.db"
         result = run_arkiv(
-            "import", str(archive_dir), "--db", str(db_path)
+            "convert", str(archive_dir), str(db_path)
         )
         assert result.returncode == 1
-        assert "No README.md" in result.stderr
+        assert "no" in result.stderr.lower() or "readme" in result.stderr.lower()
 
-    def test_export_preserves_readme_metadata(self, tmp_path):
+    def test_convert_preserves_readme_metadata(self, tmp_path):
         (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
         readme_text = (
             "---\nname: CLI test archive\ndescription: A test\n"
@@ -312,9 +297,9 @@ class TestCLI:
         )
         (tmp_path / "README.md").write_text(readme_text)
         db_path = tmp_path / "test.db"
-        run_arkiv("import", str(tmp_path / "README.md"), "--db", str(db_path))
+        run_arkiv("convert", str(tmp_path / "README.md"), str(db_path))
         out = tmp_path / "exported"
-        result = run_arkiv("export", str(db_path), "--output", str(out))
+        result = run_arkiv("convert", str(db_path), str(out))
         assert result.returncode == 0
 
         import yaml
@@ -328,6 +313,91 @@ class TestCLI:
             c["path"]: c for c in exported.frontmatter.get("contents", [])
         }
         assert coll_by_path["data.jsonl"]["description"] == "Test data"
+
+    # --- convert auto-detection and flag routing ---
+
+    def test_convert_directory_no_output_writes_arkiv_db_inside(self, tmp_path):
+        """When input is a directory and no output is given, arkiv.db is
+        written inside the directory (refresh workflow)."""
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "data.jsonl").write_text('{"content": "hi"}\n')
+        (archive / "README.md").write_text(
+            "---\nname: Test\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        result = run_arkiv("convert", str(archive))
+        assert result.returncode == 0, result.stderr
+        assert (archive / "arkiv.db").exists()
+
+    def test_convert_db_no_output_writes_exported_directory(self, tmp_path):
+        """When input is .db and no output is given, ./exported/ is used."""
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        db_path = tmp_path / "archive.db"
+        run_arkiv("convert", str(f), str(db_path))
+
+        # Run convert with no output from a cwd we can control
+        import subprocess as sp
+        result = sp.run(
+            [sys.executable, "-m", "arkiv.cli", "convert", str(db_path)],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "exported" / "README.md").exists()
+
+    def test_convert_nested_flag_works_when_producing_directory(self, tmp_path):
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        db_path = tmp_path / "archive.db"
+        run_arkiv("convert", str(f), str(db_path))
+        out = tmp_path / "nested_out"
+        result = run_arkiv("convert", str(db_path), str(out), "--nested")
+        assert result.returncode == 0, result.stderr
+        assert (out / "data").is_dir()
+        assert (out / "data" / "data.jsonl").exists()
+
+    def test_convert_nested_flag_rejected_when_producing_database(self, tmp_path):
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        db_path = tmp_path / "archive.db"
+        result = run_arkiv("convert", str(f), str(db_path), "--nested")
+        assert result.returncode == 1
+        assert "--nested" in result.stderr or "producing a directory" in result.stderr
+
+    def test_convert_since_flag_works_when_producing_directory(self, tmp_path):
+        f = tmp_path / "data.jsonl"
+        f.write_text(
+            '{"timestamp": "2023-06-01", "content": "old"}\n'
+            '{"timestamp": "2024-06-01", "content": "new"}\n'
+        )
+        db_path = tmp_path / "archive.db"
+        run_arkiv("convert", str(f), str(db_path))
+        out = tmp_path / "sliced"
+        result = run_arkiv(
+            "convert", str(db_path), str(out), "--since", "2024-01-01"
+        )
+        assert result.returncode == 0, result.stderr
+        lines = (out / "data.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 1
+
+    def test_convert_jsonl_to_db_requires_explicit_output(self, tmp_path):
+        """A single file can't default its output; user must specify."""
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        result = run_arkiv("convert", str(f))
+        assert result.returncode == 1
+        assert "output" in result.stderr.lower()
+
+    def test_convert_rejects_nondb_output_when_producing_database(self, tmp_path):
+        """If input is not .db and output is not .db, that's nonsense."""
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        out = tmp_path / "whatever.txt"
+        result = run_arkiv("convert", str(f), str(out))
+        assert result.returncode == 1
+        assert ".db" in result.stderr
 
     # --- detect with schema.yaml ---
 
@@ -465,7 +535,7 @@ class TestAutoCreateDb:
         f = tmp_path / "data.jsonl"
         f.write_text('{"content": "hello"}\n')
         db_path = tmp_path / "my.db"
-        run_arkiv("import", str(f), "--db", str(db_path))
+        run_arkiv("convert", str(f), str(db_path))
         result = run_arkiv("query", str(db_path), "SELECT content FROM records")
         assert result.returncode == 0
         assert "hello" in result.stdout
@@ -473,7 +543,7 @@ class TestAutoCreateDb:
 
 class TestBundleNotAutoExtracted:
     """Bundles are transport containers. query and mcp do not auto-extract.
-    The user must unpack first via import or convert."""
+    The user must unpack first via convert."""
 
     def _seed_bundle(self, tmp_path, name="archive.zip"):
         """Create a simple .zip bundle with a valid arkiv archive inside."""
@@ -496,7 +566,7 @@ class TestBundleNotAutoExtracted:
         result = run_arkiv("query", str(bundle), "SELECT content FROM records")
         assert result.returncode == 1
         assert "packed bundle" in result.stderr.lower()
-        assert "unpack" in result.stderr.lower() or "import" in result.stderr.lower()
+        assert "unpack" in result.stderr.lower() or "convert" in result.stderr.lower()
         # Verify no sibling directory was silently created
         assert not (tmp_path / "archive").exists()
 
@@ -512,11 +582,11 @@ class TestBundleNotAutoExtracted:
         assert result.returncode == 1
         assert "packed bundle" in result.stderr.lower()
 
-    def test_import_zip_still_works(self, tmp_path):
-        """import is an explicit conversion, so bundle unpack is appropriate."""
+    def test_convert_zip_to_db_works(self, tmp_path):
+        """convert is explicit, so bundle unpack is appropriate."""
         bundle = self._seed_bundle(tmp_path, "archive.zip")
         db_path = tmp_path / "archive.db"
-        result = run_arkiv("import", str(bundle), "--db", str(db_path))
+        result = run_arkiv("convert", str(bundle), str(db_path))
         assert result.returncode == 0
         # Query the resulting db normally
         query_result = run_arkiv("query", str(db_path), "SELECT content FROM records")
