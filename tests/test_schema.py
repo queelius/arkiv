@@ -79,6 +79,77 @@ class TestDiscoverSchema:
         assert d["values"] == ["user"]
 
 
+class TestDottedSchemaPaths:
+    """Nested metadata objects are flattened into dotted keys in schema."""
+
+    def test_single_level_nesting_flattened(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text(
+            '{"metadata": {"conv": {"model": "gpt-4", "turn": 1}}}\n'
+            '{"metadata": {"conv": {"model": "claude", "turn": 2}}}\n'
+        )
+        schema = discover_schema(f)
+        assert "conv.model" in schema
+        assert "conv.turn" in schema
+        # The container key itself should not appear
+        assert "conv" not in schema
+        assert schema["conv.model"].type == "string"
+        assert set(schema["conv.model"].values) == {"gpt-4", "claude"}
+        assert schema["conv.turn"].type == "number"
+
+    def test_deep_nesting_fully_flattened(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"a": {"b": {"c": "leaf"}}}}\n')
+        schema = discover_schema(f)
+        assert "a.b.c" in schema
+        assert "a" not in schema
+        assert "a.b" not in schema
+        assert schema["a.b.c"].values == ["leaf"]
+
+    def test_arrays_stay_opaque(self, tmp_path):
+        """Arrays are leaves, not flattened into indexed paths."""
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"tags": ["a", "b"], "info": {"n": 1}}}\n')
+        schema = discover_schema(f)
+        assert "tags" in schema
+        assert schema["tags"].type == "array"
+        # Array indices do not become keys
+        assert "tags.0" not in schema
+        assert "tags[0]" not in schema
+        # Sibling nested dict still flattens
+        assert "info.n" in schema
+
+    def test_mixed_flat_and_nested(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text(
+            '{"metadata": {"role": "user", "conv": {"model": "gpt-4"}}}\n'
+        )
+        schema = discover_schema(f)
+        assert "role" in schema
+        assert "conv.model" in schema
+        assert "conv" not in schema
+
+    def test_empty_nested_dict_produces_no_keys(self, tmp_path):
+        """An empty dict value has no leaves, so it should produce no entries."""
+        f = tmp_path / "test.jsonl"
+        f.write_text(
+            '{"metadata": {"empty": {}, "role": "user"}}\n'
+        )
+        schema = discover_schema(f)
+        assert "role" in schema
+        assert "empty" not in schema
+
+    def test_dotted_keys_in_source_alias_to_nested(self, tmp_path):
+        """Documented caveat: a literal dotted key in source JSON is
+        indistinguishable from a nested path in the resulting schema."""
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"user.name": "alice"}}\n')
+        schema = discover_schema(f)
+        # Whatever the source key looked like, it shows up as "user.name".
+        assert "user.name" in schema
+        assert schema["user.name"].values == ["alice"]
+
+
 class TestSchemaEntryDescription:
     def test_description_default_none(self):
         e = SchemaEntry(type="string", count=1)

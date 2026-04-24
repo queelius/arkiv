@@ -263,10 +263,36 @@ This section specifies the algorithm for auto-generating schema entries from JSO
 
 For each record in the JSONL file:
 1. Extract the `metadata` object (skip records without metadata)
-2. For each key-value pair in metadata:
+2. Flatten nested objects into dotted leaf keys (see 2.1.1)
+3. For each flattened key-value pair:
    - Increment the count for this key
    - Record the JSON type of the value (using the [type vocabulary](#type-vocabulary))
    - Track unique values for enumeration (see below)
+
+### 2.1.1 Flattening nested objects
+
+Nested metadata objects are flattened into dotted leaf keys before counting. Given a metadata value:
+
+```json
+{"conversation": {"model": "gpt-4", "turn": 3}, "role": "user"}
+```
+
+flattening produces:
+
+```
+conversation.model = "gpt-4"
+conversation.turn = 3
+role = "user"
+```
+
+Rules:
+
+- **Nested dicts** expand into dotted paths. The container key itself does NOT appear in the schema; only its leaves do.
+- **Arrays** are leaves, not traversed. An array-valued key produces one schema entry with `type: array`. Array indices (`tags.0`, `tags[0]`) are never schema keys.
+- **Empty nested dicts** (`{}`) have no leaves and produce no schema entries.
+- **Scalars** (string, number, boolean, null) pass through as leaves.
+
+**Caveat: literal dots in source keys.** If a source record has a metadata key that contains a literal dot (e.g. `"user.name": "alice"`), it becomes indistinguishable from a nested path (`{"user": {"name": "alice"}}`) in the resulting schema. The schema is a description of what appears in the data, not a query grammar. Consumers that need to disambiguate should inspect the underlying JSONL records directly. This is rare enough in practice that arkiv does not engineer around it.
 
 ## 2.2 Value enumeration
 

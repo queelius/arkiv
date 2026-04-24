@@ -70,16 +70,19 @@ class TestSchemaEntryToDictExample:
 class TestDiscoverSchemaNonHashable:
     """Covers non-hashable metadata values (the critical bug fix)."""
 
-    def test_dict_values_force_example_fallback(self, tmp_path):
+    def test_array_values_force_example_fallback(self, tmp_path):
+        """Array values (non-hashable leaves) produce an 'array' entry with
+        example instead of a values list. Note: nested dicts no longer
+        reach this path because they flatten into dotted leaf keys."""
         f = tmp_path / "test.jsonl"
         f.write_text(
-            '{"metadata": {"nested": {"a": 1}}}\n'
-            '{"metadata": {"nested": {"b": 2}}}\n'
+            '{"metadata": {"tags": ["a", "b"]}}\n'
+            '{"metadata": {"tags": ["c", "d"]}}\n'
         )
         schema = discover_schema(f)
-        assert schema["nested"].type == "object"
-        assert schema["nested"].values is None
-        assert schema["nested"].example is not None
+        assert schema["tags"].type == "array"
+        assert schema["tags"].values is None
+        assert schema["tags"].example is not None
 
     def test_unhashable_then_hashable_does_not_crash(self, tmp_path):
         """First record unhashable, second hashable -- must not crash."""

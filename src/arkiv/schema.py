@@ -56,13 +56,43 @@ def _json_type(value: Any) -> str:
     return "string"
 
 
+def _flatten_metadata(
+    md: Dict[str, Any], prefix: str = ""
+) -> Dict[str, Any]:
+    """Flatten a metadata dict into dotted leaf keys.
+
+    Nested dicts expand into dotted paths: ``{"a": {"b": 1}}`` becomes
+    ``{"a.b": 1}``. Arrays are leaves, not traversed. Empty nested dicts
+    vanish (they have no leaves). Scalars and arrays pass through.
+
+    Caveat: source keys that contain literal dots (e.g. ``"user.name"``)
+    become indistinguishable from nested paths in the flattened output.
+    The schema is a description of what appears in the data, not a query
+    grammar; consumers that need to disambiguate should inspect the
+    underlying JSONL records directly.
+    """
+    out: Dict[str, Any] = {}
+    for key, value in md.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            # Empty dicts have no leaves and contribute nothing to schema.
+            if value:
+                out.update(_flatten_metadata(value, prefix=f"{path}."))
+        else:
+            out[path] = value
+    return out
+
+
 def discover_schema_from_metadata(
     metadata_iter,
 ) -> Dict[str, SchemaEntry]:
     """Discover metadata key schemas from an iterable of metadata dicts.
 
-    Shared core used by both `discover_schema(path)` (reads JSONL) and
-    `Database.refresh_schema(collection)` (reads from SQLite).
+    Nested metadata objects are flattened into dotted leaf keys (see
+    ``_flatten_metadata``). Arrays stay opaque.
+
+    Shared core used by both ``discover_schema(path)`` (reads JSONL) and
+    ``Database.refresh_schema(collection)`` (reads from SQLite).
     """
     key_counts: Dict[str, int] = {}
     key_types: Dict[str, str] = {}
@@ -72,7 +102,7 @@ def discover_schema_from_metadata(
     for metadata in metadata_iter:
         if not metadata:
             continue
-        for key, value in metadata.items():
+        for key, value in _flatten_metadata(metadata).items():
             key_counts[key] = key_counts.get(key, 0) + 1
             key_types[key] = _json_type(value)
 
