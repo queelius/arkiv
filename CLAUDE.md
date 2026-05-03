@@ -37,13 +37,19 @@ CLI is invoked as `python -m arkiv.cli` (or `arkiv` if installed). Tests use `su
 
 ### Data Flow
 
+The directory and database forms are isomorphic peers; `arkiv convert`
+goes either direction:
+
 ```
-README.md + schema.yaml + *.jsonl   (archive directory)
-        ↓ import_readme()
-    SQLite database                 (3 tables: records, _schema, _metadata)
-        ↓ export()
-README.md + schema.yaml + *.jsonl   (roundtrip-safe)
+README.md + schema.yaml + *.jsonl   ←→   SQLite database
+   (archive directory form)               (records, _schema, _metadata tables)
 ```
+
+`arkiv convert` auto-detects direction from the input type. Internally
+this delegates to `Database.import_readme()` / `Database.import_jsonl()`
+when producing a database, and `Database.export()` when producing a
+directory. Both directions are lossless. The directory form is
+authoritative on divergence (see `docs/PHILOSOPHY.md`).
 
 ### Record Model (`record.py`)
 
@@ -69,7 +75,7 @@ Key behaviors:
 - `import_jsonl()` uses **replace semantics** (deletes existing records for same collection before inserting)
 - `import_jsonl()` preserves existing schema descriptions across reimports via `_load_schema_descriptions()`
 - `import_readme()` parses README.md frontmatter, imports each JSONL from `contents` (resolves paths relative to README, so nested `collection/collection.jsonl` paths work), merges curated schema from sibling `schema.yaml`
-- `insert_record()` is the append-only write path used by the MCP `write_record` tool. By design, it does NOT update the `_schema` table; the pre-computed schema reflects the state at last import/export.
+- `insert_record()` is the append-only write path used by the MCP `write_record` tool. By design, it does NOT update the `_schema` table; the pre-computed schema reflects the state at last `arkiv convert`.
 - `refresh_schema()` recomputes and persists schema for a collection by scanning all records. Use after batches of `insert_record()` writes to bring the pre-computed schema back in sync.
 - `_save_schema_entries()` is the shared helper for writing to `_schema` table (used by both `import_jsonl` and `merge_curated_schema`)
 - `_store_readme_metadata()` / `_load_readme_metadata()` serialize README frontmatter + body to/from `_metadata` KV table
@@ -108,6 +114,26 @@ The `export()` method writes a full archive directory (JSONL + README.md + schem
 ### Temporal Filtering (`timefilter.py`)
 
 `increment_iso_prefix()` handles ISO 8601 date arithmetic. `build_time_filter()` constructs SQL WHERE clauses for `--since`/`--until`. Used by `export()`.
+
+### Bundle Support (`bundle.py`)
+
+Self-contained module for `.zip` and `.tar.gz` archives. Public API:
+`is_bundle(path)`, `pack_bundle(directory, output)`,
+`unpack_bundle(bundle, target_dir)`. The `cmd_convert` flow uses these
+to pack/unpack through a tempdir transparently when the user-supplied
+input or output is a bundle.
+
+Stdlib-only: zip with DEFLATE, tar with gzip. Modern formats like zstd
+or xz are deliberately excluded so bundles stay openable on any
+machine for decades. Both extractors apply path-traversal protection
+(rejects entries that resolve outside the target directory) plus, on
+Python 3.12+, the native `filter="data"` safe-extraction mode. This
+matters because bundles may come from untrusted sources.
+
+`arkiv query` and `arkiv mcp` deliberately do NOT auto-extract
+bundles. They reject bundle input with a helpful error directing the
+user to `arkiv convert` first. Bundles are transport containers, not
+working formats. See `docs/PHILOSOPHY.md` for the rationale.
 
 ### MCP Server (`server.py`)
 
@@ -165,8 +191,28 @@ A curated example archive lives at `examples/repos/` and is verified by `test_in
 
 - Python 3.8+, sqlite3 (stdlib), json (stdlib), pyyaml, MCP Python SDK
 
+## Releases
+
+`pyproject.toml` and `src/arkiv/__init__.py` both carry the version
+string and must be bumped together. Each release also updates
+`CHANGELOG.md` (Keep-a-Changelog format) and gets a git tag
+`v<version>`. The `arkiv_format` field in exported READMEs is a
+separate version (currently `"0.2"`) tracking the on-disk format
+spec, not the package release.
+
+## Further Reading
+
+- `docs/PHILOSOPHY.md` -- two-axis durability model, why bundles are
+  transport not a third form, the regenerability principle. Read this
+  before making design decisions; the language used in code comments
+  and commits assumes this framing.
+- `SPEC.md` -- the format spec (Parts 1-2 normative, Part 3 reference
+  implementation notes, Part 4 ecosystem context).
+- `CHANGELOG.md` -- per-release summary of breaking changes, additions,
+  fixes.
+
 ## Related Projects
 
 - [longshade](../longshade/) -- Persona packaging convention (consumer of arkiv)
-- [memex](../memex/), [mtk](../mtk/), [btk](../btk/), [ptk](../ptk/), [ebk](../ebk/), [repoindex](../repoindex/), [chartfold](../chartfold/) -- Source toolkits (producers of arkiv JSONL)
-- [longecho](../longecho/) -- longecho compliance validator
+- [memex](../memex/), [mtk](../mtk/), [btk](../btk/), [ptk](../ptk/), [ebk](../ebk/), [repoindex](../repoindex/), [chartfold](../chartfold/) -- Source toolkits (producers of arkiv archives)
+- [longecho](../longecho/) -- longecho compliance validator. arkiv archives are longecho-compliant by construction; the two projects compose without code coupling.
