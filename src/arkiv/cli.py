@@ -159,7 +159,7 @@ def cmd_schema(args):
     """Show schema from a JSONL file or SQLite database."""
     input_path = Path(args.input)
 
-    if input_path.suffix == ".db":
+    if _is_db_path(input_path):
         from .database import Database
 
         db = Database(input_path, read_only=True)
@@ -241,7 +241,7 @@ def cmd_info(args):
     """Print info about a JSONL file or SQLite database."""
     input_path = Path(args.input)
 
-    if input_path.suffix == ".db":
+    if _is_db_path(input_path):
         from .database import Database
 
         db = Database(input_path, read_only=True)
@@ -271,7 +271,7 @@ def cmd_info(args):
 def _require_jsonl(path, suggestion):
     """Check that path is a JSONL file, not a database."""
     p = Path(path)
-    if p.suffix == ".db":
+    if _is_db_path(p):
         print(
             f"Error: {p.name} is a SQLite database, not a JSONL file.\n"
             f"Try: arkiv {suggestion} {p.name}",

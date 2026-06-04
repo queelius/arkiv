@@ -12,13 +12,13 @@ like zstd/xz so bundles remain openable on any machine for decades.
 
 Typical flow::
 
-    # Export (from arkiv CLI):
-    #   arkiv export archive.db bundle.zip
-    # → library writes to a tempdir, then packs into bundle.zip.
+    # Pack a database into a bundle (from arkiv CLI):
+    #   arkiv convert archive.db bundle.zip
+    # -> library writes the directory form to a tempdir, then packs it.
 
-    # Import (from arkiv CLI):
-    #   arkiv import bundle.zip --db archive.db
-    # → library extracts bundle.zip to a tempdir, then imports from it.
+    # Unpack a bundle into a database (from arkiv CLI):
+    #   arkiv convert bundle.zip archive.db
+    # -> library extracts bundle.zip to a tempdir, then imports from it.
 """
 from __future__ import annotations
 

@@ -59,7 +59,7 @@ On top of this format, arkiv provides:
 
 3. **An MCP server.** Three read-only tools (`get_manifest`, `get_schema`, `sql_query`) plus an optional append-only `write_record`. Any LLM with MCP support can load an arkiv archive, learn its structure, and query it in natural language. The server does not interpret the data; it exposes it.
 
-The format is designed so that **the SQLite database is completely regenerable from the directory form**. If you delete the .db file, `arkiv import ./archive/` rebuilds it. This means the query layer never becomes the source of truth. The JSONL files plus the README plus the schema.yaml are enough to reconstruct everything.
+The format is designed so that **the SQLite database is completely regenerable from the directory form**. If you delete the .db file, `arkiv convert ./archive/` rebuilds it. This means the query layer never becomes the source of truth. The JSONL files plus the README plus the schema.yaml are enough to reconstruct everything.
 
 ---
 
@@ -126,7 +126,7 @@ An arkiv archive has two interconvertible representations:
 - **Directory form**: README.md + schema.yaml + *.jsonl files. Human-readable, git-diffable, appendable with `echo >>`, editable with a text editor.
 - **Database form**: a single SQLite file containing `records`, `_schema`, and `_metadata` tables. Queryable, single-file-portable, LLM-accessible via MCP.
 
-Both forms are **complete**. The directory form can regenerate the database (`arkiv import`). The database can regenerate the directory (`arkiv export`). The conversion is lossless in both directions. Neither form is a cache of the other; they are isomorphic representations optimized for different access patterns.
+Both forms are **complete**. A single command, `arkiv convert`, regenerates either form from the other (the direction is auto-detected from the input type). The conversion is lossless in both directions. Neither form is a cache of the other; they are isomorphic representations optimized for different access patterns.
 
 **Why the directory form is authoritative on divergence.** If the two forms get out of sync (someone edits a JSONL file after importing, or `insert_record` writes to the database without re-exporting), a conflict-resolution rule is needed. The directory form wins for three reasons:
 
@@ -138,7 +138,7 @@ Both forms are **complete**. The directory form can regenerate the database (`ar
 
 These properties are why the spec says "if they diverge, the directory form is authoritative." It is not because the directory form is more complete (it is not; both forms contain the same data). It is because the directory form is more *survivable*.
 
-**Detecting divergence.** When `arkiv import` loads a directory into SQLite, it MAY store a content fingerprint (hash of the JSONL and README files) in the `_metadata` table. When records are later added via `insert_record`, the implementation MAY track a count of records inserted since the last import. Together, these allow an `arkiv status` operation to report whether the two forms are in sync, whether the directory has been modified since import, or whether the database has new records not yet exported. This is optional but recommended for implementations that support the write path.
+**Detecting divergence.** When `arkiv convert` builds a database from a directory, an implementation MAY store a content fingerprint (hash of the JSONL and README files) in the `_metadata` table. When records are later added via `insert_record`, the implementation MAY track a count of records inserted since that conversion. Together, these would let a future `arkiv status` operation report whether the two forms are in sync, whether the directory has been modified since conversion, or whether the database has new records not yet written back. This is optional, recommended for implementations that support the write path, and **not yet implemented in the reference tool** (there is no `arkiv status` command today, and `--writable` inserts can therefore diverge from the directory silently until the next `arkiv convert`).
 
 ---
 
@@ -150,8 +150,8 @@ An arkiv archive may be packed into a `.zip` or `.tar.gz` for transport or stora
 
 This has concrete consequences for the arkiv CLI:
 
-- `arkiv import bundle.zip --db archive.db` works, because import is an explicit conversion operation. The tool transparently unpacks to a temporary directory, imports, and discards the tempdir. The bundle is "consumed" into the database form.
-- `arkiv export archive.db bundle.zip` works for the same reason. Export is explicit conversion; the tool exports to a tempdir, packs, and discards.
+- `arkiv convert bundle.zip archive.db` works, because conversion is explicit. The tool transparently unpacks to a temporary directory, imports, and discards the tempdir. The bundle is "consumed" into the database form.
+- `arkiv convert archive.db bundle.zip` works for the same reason. The tool builds the directory in a tempdir, packs it, and discards the tempdir.
 - `arkiv query bundle.zip "..."` does **not** work. Query asks the tool to *operate* on the archive, and operating on a packed bundle is not a thing. The user gets a clear error: "bundle.zip is a packed bundle, not a working archive. Unpack first."
 - Same for `arkiv mcp bundle.zip` and any other read or write operation.
 

@@ -592,3 +592,41 @@ class TestBundleNotAutoExtracted:
         query_result = run_arkiv("query", str(db_path), "SELECT content FROM records")
         assert query_result.returncode == 0
         assert "inside bundle" in query_result.stdout
+
+
+class TestSqliteExtensionRecognition:
+    """schema/info/detect/fix must treat .sqlite and .sqlite3 as databases,
+    consistently with convert/query/mcp (which use _is_db_path)."""
+
+    def _seed_sqlite(self, tmp_path, name):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "hello", "metadata": {"role": "user"}}\n')
+        db_path = tmp_path / name
+        run_arkiv("convert", str(f), str(db_path))
+        return db_path
+
+    @pytest.mark.parametrize("ext", ["sqlite", "sqlite3"])
+    def test_schema_reads_sqlite_extension(self, tmp_path, ext):
+        db_path = self._seed_sqlite(tmp_path, f"archive.{ext}")
+        result = run_arkiv("schema", str(db_path))
+        assert result.returncode == 0, result.stderr
+        # Output is the DB schema map (keyed by collection), valid JSON.
+        out = json.loads(result.stdout)
+        assert "test" in out
+
+    @pytest.mark.parametrize("ext", ["sqlite", "sqlite3"])
+    def test_info_reads_sqlite_extension(self, tmp_path, ext):
+        db_path = self._seed_sqlite(tmp_path, f"archive.{ext}")
+        result = run_arkiv("info", str(db_path))
+        assert result.returncode == 0, result.stderr
+        out = json.loads(result.stdout)
+        assert out["total_records"] == 1
+
+    @pytest.mark.parametrize("ext", ["sqlite", "sqlite3"])
+    def test_detect_rejects_sqlite_with_friendly_message(self, tmp_path, ext):
+        db_path = self._seed_sqlite(tmp_path, f"archive.{ext}")
+        result = run_arkiv("detect", str(db_path))
+        assert result.returncode == 1
+        # Friendly guidance, not a raw UTF-8 decode traceback.
+        assert "SQLite database" in result.stderr
+        assert "0x89" not in result.stderr

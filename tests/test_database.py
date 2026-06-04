@@ -554,6 +554,70 @@ class TestPathTraversalGuard:
         db.close()
 
 
+class TestRecursiveCTE:
+    """A read-only recursive CTE must be allowed (the query() prefix gate
+    advertises WITH, so WITH RECURSIVE must not be denied by the authorizer)."""
+
+    def test_with_recursive_is_allowed(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "a"}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+        rows = db.query(
+            "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL "
+            "SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt"
+        )
+        db.close()
+        assert [r["x"] for r in rows] == [1, 2, 3, 4, 5]
+
+    def test_recursive_cte_over_records(self, tmp_path):
+        """A realistic shape: recursively walk a self-referential chain
+        stored in metadata (the kind of query an LLM would issue)."""
+        f = tmp_path / "test.jsonl"
+        f.write_text(
+            '{"content": "root", "metadata": {"id": 1, "parent": null}}\n'
+            '{"content": "child", "metadata": {"id": 2, "parent": 1}}\n'
+            '{"content": "grandchild", "metadata": {"id": 3, "parent": 2}}\n'
+        )
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+        rows = db.query(
+            "WITH RECURSIVE chain(id, content) AS ("
+            "  SELECT json_extract(metadata, '$.id'), content FROM records "
+            "    WHERE json_extract(metadata, '$.parent') IS NULL "
+            "  UNION ALL "
+            "  SELECT json_extract(r.metadata, '$.id'), r.content FROM records r "
+            "    JOIN chain c ON json_extract(r.metadata, '$.parent') = c.id"
+            ") SELECT content FROM chain"
+        )
+        db.close()
+        assert [r["content"] for r in rows] == ["root", "child", "grandchild"]
+
+
+class TestFalsyExample:
+    """A high-cardinality key whose first observed value is falsy (0, "",
+    False) must still keep that value as the schema's sample example."""
+
+    def test_falsy_first_example_preserved(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        # 25 distinct numeric values (> MAX_ENUM_VALUES) so the entry uses
+        # `example` rather than enumerated `values`; the first value is 0.
+        lines = "".join(
+            f'{{"content": "r{i}", "metadata": {{"score": {i}}}}}\n'
+            for i in range(25)
+        )
+        f.write_text(lines)
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+        schema = db.get_schema("test")
+        db.close()
+        score = schema["metadata_keys"]["score"]
+        assert score["type"] == "number"
+        assert score["count"] == 25
+        # The example (0) must survive into sample_values, not be dropped.
+        assert score["values"] == [0]
+
+
 class TestInfo:
     def test_get_info(self, tmp_path):
         f = tmp_path / "test.jsonl"

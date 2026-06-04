@@ -220,7 +220,9 @@ class Database:
             "DELETE FROM _schema WHERE collection = ?", (collection,)
         )
         for key, entry in entries.items():
-            sample = entry.values or ([entry.example] if entry.example else [])
+            sample = entry.values or (
+                [entry.example] if entry.example is not None else []
+            )
             self.conn.execute(
                 "INSERT INTO _schema (collection, key_path, type, count, sample_values, description) VALUES (?, ?, ?, ?, ?, ?)",
                 (
@@ -241,6 +243,13 @@ class Database:
             sqlite3.SQLITE_SELECT,
             sqlite3.SQLITE_READ,
             sqlite3.SQLITE_FUNCTION,
+            # SQLITE_RECURSIVE (action 33): authorizes the recursion step
+            # inside a WITH RECURSIVE CTE. It is a read-only operation, and
+            # query() already admits the WITH prefix, so without this the
+            # authorizer would deny every recursive CTE. getattr keeps the
+            # 3.8 floor honest in case the constant name is unavailable; the
+            # numeric action code is stable across SQLite versions.
+            getattr(sqlite3, "SQLITE_RECURSIVE", 33),
         }
         return sqlite3.SQLITE_OK if action in allowed else sqlite3.SQLITE_DENY
 

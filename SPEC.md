@@ -22,7 +22,7 @@ arkiv is not specific to any application. It is a general-purpose format for per
 ## Design Principles
 
 1. **Permissive input, best-effort processing.** Any valid JSON object is a valid record. Accept everything, preserve everything, process what you can.
-2. **The archive is the source of truth.** arkiv archives exist in two interconvertible forms -- a directory (README.md + schema.yaml + *.jsonl) and a database (single SQLite file). Both represent the same data. In normal use they stay in sync via import/export. If they diverge, the directory form is authoritative.
+2. **The archive is the source of truth.** arkiv archives exist in two interconvertible forms -- a directory (README.md + schema.yaml + *.jsonl) and a database (single SQLite file). Both represent the same data. In normal use they stay in sync via `arkiv convert`. If they diverge, the directory form is authoritative.
 3. **Standards over conventions.** MIME types (not custom type enums), URIs (not custom path formats), ISO 8601 (not custom date formats), SQL (not a custom query language).
 4. **Document-oriented, not relational.** Each record is a self-contained resource. Denormalize at export time from relational sources.
 5. **No required fields.** The format imposes no schema. Metadata is freeform JSON. Applications decide what fields they need.
@@ -372,7 +372,7 @@ The `_schema` table stores the merged schema (auto-discovered + curated). The `s
 - Writes one JSONL file per collection
 - Writes README.md from stored `_metadata`
 - Writes schema.yaml from `_schema` table
-- Roundtrip is lossless: import → export produces equivalent files
+- Roundtrip is lossless: a directory converted to a database and back produces equivalent files
 - Exported READMEs contain auto-generated schema summary tables wrapped in `<!-- arkiv:schema:begin -->` / `<!-- arkiv:schema:end -->` sentinel comments. On re-export, the region between sentinels is replaced; prose outside sentinels is preserved
 - Optional parameters:
   - `nested`: If true, creates a subdirectory per collection, each with its own README.md and schema.yaml
@@ -522,7 +522,7 @@ Each layer is independently functional and regenerable from the layer beneath. L
 
 **Regenerability principle.** The directory form and the database form are isomorphic: each can regenerate the other losslessly via `arkiv convert`. Neither is a cache of the other. However, the directory form is authoritative on divergence because it is human-inspectable, git-diffable, and editable without tooling. Every layer above the directory form MUST be regenerable from it. See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) for the full rationale.
 
-**Bundles are transport, not a new layer.** A `.zip` or `.tar.gz` of the directory form is a serialization for shipping, not a third representation. Packed bundles sit alongside Layer 0 as a transport wrapper. Read and write operations (`query`, `mcp`) do NOT auto-extract bundles; they reject packed inputs with a clear error message directing the user to unpack first. Explicit conversion operations (`import`, `export`, `convert`) transparently pack/unpack because packing/unpacking is what the user asked for. This keeps the "bundles are shipping containers" principle honest: you opt into serialization when you ship, and opt out when you work.
+**Bundles are transport, not a new layer.** A `.zip` or `.tar.gz` of the directory form is a serialization for shipping, not a third representation. Packed bundles sit alongside Layer 0 as a transport wrapper. Read and write operations (`query`, `mcp`) do NOT auto-extract bundles; they reject packed inputs with a clear error message directing the user to unpack first. The explicit conversion operation (`convert`) transparently packs/unpacks because packing/unpacking is what the user asked for. This keeps the "bundles are shipping containers" principle honest: you opt into serialization when you ship, and opt out when you work.
 
 ## 4.3 Ecosystem Roles
 
@@ -556,7 +556,7 @@ toolkit-export/
 
 ### arkiv (interchange format and query layer)
 
-arkiv defines the record format, the archive directory layout, and the schema discovery algorithm. The reference implementation provides import/export, a SQL query layer, and an MCP server. arkiv does not own the data; it provides structural access to it.
+arkiv defines the record format, the archive directory layout, and the schema discovery algorithm. The reference implementation provides bidirectional conversion, a SQL query layer, and an MCP server. arkiv does not own the data; it provides structural access to it.
 
 ### Consumers
 
