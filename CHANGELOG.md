@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
+
+### Fixed
+
+- Read-only SQL queries may now use `WITH RECURSIVE`. The authorizer
+  denied the recursion step (`SQLITE_RECURSIVE`) even though `query()`
+  admits the `WITH` prefix, so recursive CTEs (e.g. walking a parent
+  chain stored in metadata) failed with "not authorized".
+- A high-cardinality metadata key whose first observed value is falsy
+  (`0`, `""`, `false`) no longer has its `example` dropped from the data
+  dictionary. `_save_schema_entries` used a truthiness test where it
+  needed `is not None`.
+- `schema`, `info`, `detect`, and `fix` now recognize `.sqlite` and
+  `.sqlite3` databases, consistent with `convert`/`query`/`mcp`.
+  Previously these treated such a file as JSONL and failed with a cryptic
+  UTF-8 decode error.
+- Importing an archive whose README lists two collections that resolve to
+  the same name (a flat `data.jsonl` and a nested `data/`, or two
+  `contents` entries with the same stem) now raises a clear error naming
+  both sources, instead of silently destroying the first via
+  replace-on-import.
+
+### Changed
+
+- SPEC.md: collection identity must be unique within an archive; added a
+  note that merging archives is a directory-level operation (concatenate
+  JSONL, reconcile by hand) rather than a `convert` mode.
+
+### Documentation
+
+- Propagated the 0.2.0 `import`/`export` to `convert` rename through
+  `docs/PHILOSOPHY.md`, `SPEC.md`, and the `bundle.py` module docstring,
+  which still presented the removed CLI commands as working. The
+  divergence-detection note now states plainly that `arkiv status` is not
+  yet implemented.
+
 ## [0.2.0] - 2026-04-09
 
 This release unifies the CLI mental model around a single `convert`

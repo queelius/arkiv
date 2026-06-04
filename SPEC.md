@@ -123,6 +123,10 @@ In both layouts, the top-level README and schema.yaml cover the full archive. Ne
 
 Each `.jsonl` file is a **collection**. The collection name is the filename stem (e.g., `conversations.jsonl` → collection `conversations`).
 
+**Collection identity must be unique within an archive.** Because the name is the bare stem, a flat `data.jsonl` and a nested `data/` (whose JSONL is `data/data.jsonl`) both resolve to collection `data`, as do two `contents` entries pointing at same-stem files in different directories. Implementations MUST treat this as an error rather than silently overwriting one collection with the other. Rename one source so each collection name is distinct.
+
+**Merging archives is a directory-level operation.** There is no merge mode in `arkiv convert`; to combine two archives, concatenate their JSONL files (`cat a/conversations.jsonl b/conversations.jsonl > merged/conversations.jsonl`) and reconcile any same-named collections by hand before converting. This keeps merge semantics explicit and visible in plain files rather than hidden in tooling.
+
 ---
 
 ## 1.3 README.md (Archive Identity)

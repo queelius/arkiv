@@ -580,6 +580,13 @@ class Database:
         # Store README metadata
         self._store_readme_metadata(readme)
 
+        # Track which collection each source path claims, so two contents
+        # entries that resolve to the same collection name raise instead of
+        # silently destroying the first via import_jsonl's replace semantics.
+        # A fresh map per top-level import keeps legitimate re-imports (the
+        # same archive converted twice) idempotent rather than self-colliding.
+        seen: Dict[str, Path] = {}
+
         total = 0
         for item in readme.frontmatter.get("contents", []):
             if not isinstance(item, dict) or "path" not in item:
@@ -588,10 +595,9 @@ class Database:
             if entry_path.is_dir():
                 sub_readme = entry_path / "README.md"
                 if sub_readme.exists():
-                    total += self._import_nested_readme(sub_readme)
+                    total += self._import_nested_readme(sub_readme, seen, base_dir)
             elif entry_path.suffix == ".jsonl" and entry_path.exists():
-                count = self.import_jsonl(entry_path, collection=entry_path.stem)
-                total += count
+                total += self._import_collection_checked(entry_path, seen, base_dir)
 
         # Merge curated schema if schema.yaml exists
         schema_yaml_path = base_dir / "schema.yaml"
@@ -602,7 +608,46 @@ class Database:
 
         return total
 
-    def _import_nested_readme(self, readme_path: Union[str, Path]) -> int:
+    def _import_collection_checked(
+        self,
+        entry_path: Path,
+        seen: Dict[str, Path],
+        archive_root: Path,
+    ) -> int:
+        """Import one JSONL collection, raising on a name collision.
+
+        Collection identity is the filename stem (SPEC 1.2), so two contents
+        entries at different paths can resolve to the same collection. Because
+        import_jsonl uses replace semantics, importing the second would
+        silently delete the first. Detect that here and raise a clear error
+        naming both sources (relative to the archive root) so the user can
+        rename one.
+        """
+        name = entry_path.stem
+        resolved = entry_path.resolve()
+        if name in seen and seen[name] != resolved:
+
+            def _rel(p: Path) -> Path:
+                try:
+                    return p.relative_to(archive_root.resolve())
+                except ValueError:
+                    return p
+
+            raise ValueError(
+                f"collection name collision: {name!r}\n"
+                f"  {_rel(seen[name])}  and  {_rel(resolved)}\n"
+                f"  both map to collection {name!r}. Rename one so each "
+                f"collection is unique within the archive."
+            )
+        seen[name] = resolved
+        return self.import_jsonl(entry_path, collection=name)
+
+    def _import_nested_readme(
+        self,
+        readme_path: Union[str, Path],
+        seen: Dict[str, Path],
+        archive_root: Path,
+    ) -> int:
         """Import contents of a nested README without storing its metadata."""
         from .readme import parse_readme
         from .schema import load_schema_yaml
@@ -617,8 +662,7 @@ class Database:
                 continue
             entry_path = base_dir / item["path"]
             if entry_path.suffix == ".jsonl" and entry_path.exists():
-                count = self.import_jsonl(entry_path, collection=entry_path.stem)
-                total += count
+                total += self._import_collection_checked(entry_path, seen, archive_root)
 
         # Merge per-collection schema.yaml if present
         schema_yaml_path = base_dir / "schema.yaml"

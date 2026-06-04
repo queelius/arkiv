@@ -213,3 +213,87 @@ class TestNestedImport:
         schema = db.get_schema("data")
         assert schema["metadata_keys"]["role"]["description"] == "Speaker identity"
         db.close()
+
+
+class TestCollisionDetection:
+    """Two contents entries that resolve to the same collection name must
+    raise rather than silently destroy the first via replace-semantics."""
+
+    def test_flat_and_nested_same_stem_raises(self, tmp_path):
+        # Flat data.jsonl AND a nested data/ both map to collection "data".
+        (tmp_path / "data.jsonl").write_text('{"content": "flat record"}\n')
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "data.jsonl").write_text(
+            '{"content": "nested record"}\n'
+        )
+        (tmp_path / "data" / "README.md").write_text(
+            "---\nname: data\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        (tmp_path / "README.md").write_text(
+            "---\nname: Test\ncontents:\n- path: data.jsonl\n- path: data/\n---\n"
+        )
+        db = Database(tmp_path / "test.db")
+        with pytest.raises(ValueError, match="collision"):
+            db.import_readme(tmp_path / "README.md")
+        db.close()
+
+    def test_collision_error_names_both_paths(self, tmp_path):
+        (tmp_path / "data.jsonl").write_text('{"content": "flat"}\n')
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "data.jsonl").write_text('{"content": "nested"}\n')
+        (tmp_path / "data" / "README.md").write_text(
+            "---\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        (tmp_path / "README.md").write_text(
+            "---\ncontents:\n- path: data.jsonl\n- path: data/\n---\n"
+        )
+        db = Database(tmp_path / "test.db")
+        with pytest.raises(ValueError) as exc:
+            db.import_readme(tmp_path / "README.md")
+        db.close()
+        msg = str(exc.value)
+        assert "data" in msg
+        # Both colliding sources should be named so the user can rename one.
+        assert "data.jsonl" in msg and "data/data.jsonl" in msg
+
+    def test_two_subdir_entries_same_stem_raises(self, tmp_path):
+        # contents lists a/data.jsonl and b/data.jsonl, both -> "data".
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        (tmp_path / "a" / "data.jsonl").write_text('{"content": "a"}\n')
+        (tmp_path / "b" / "data.jsonl").write_text('{"content": "b"}\n')
+        (tmp_path / "README.md").write_text(
+            "---\ncontents:\n- path: a/data.jsonl\n- path: b/data.jsonl\n---\n"
+        )
+        db = Database(tmp_path / "test.db")
+        with pytest.raises(ValueError, match="collision"):
+            db.import_readme(tmp_path / "README.md")
+        db.close()
+
+    def test_distinct_collections_do_not_collide(self, tmp_path):
+        # Sanity: distinct stems import fine, no false positive.
+        (tmp_path / "conv.jsonl").write_text('{"content": "c"}\n')
+        (tmp_path / "notes.jsonl").write_text('{"content": "n"}\n')
+        (tmp_path / "README.md").write_text(
+            "---\ncontents:\n- path: conv.jsonl\n- path: notes.jsonl\n---\n"
+        )
+        db = Database(tmp_path / "test.db")
+        count = db.import_readme(tmp_path / "README.md")
+        assert count == 2
+        db.close()
+
+    def test_reimport_same_archive_no_false_collision(self, tmp_path):
+        # Re-importing the same archive must NOT be flagged as a collision
+        # and must stay idempotent (replace-semantics, no duplication).
+        (tmp_path / "conv.jsonl").write_text(
+            '{"content": "a"}\n{"content": "b"}\n'
+        )
+        (tmp_path / "README.md").write_text(
+            "---\ncontents:\n- path: conv.jsonl\n---\n"
+        )
+        db = Database(tmp_path / "test.db")
+        db.import_readme(tmp_path / "README.md")
+        db.import_readme(tmp_path / "README.md")  # second pass: no raise
+        result = db.query("SELECT COUNT(*) AS n FROM records")
+        assert result[0]["n"] == 2  # not duplicated to 4
+        db.close()

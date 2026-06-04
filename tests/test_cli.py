@@ -288,6 +288,23 @@ class TestCLI:
         assert result.returncode == 1
         assert "no" in result.stderr.lower() or "readme" in result.stderr.lower()
 
+    def test_convert_colliding_archive_exits_1(self, tmp_path):
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        (archive_dir / "data.jsonl").write_text('{"content": "flat"}\n')
+        (archive_dir / "data").mkdir()
+        (archive_dir / "data" / "data.jsonl").write_text('{"content": "nested"}\n')
+        (archive_dir / "data" / "README.md").write_text(
+            "---\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        (archive_dir / "README.md").write_text(
+            "---\ncontents:\n- path: data.jsonl\n- path: data/\n---\n"
+        )
+        db_path = tmp_path / "test.db"
+        result = run_arkiv("convert", str(archive_dir), str(db_path))
+        assert result.returncode == 1
+        assert "collision" in result.stderr.lower()
+
     def test_convert_preserves_readme_metadata(self, tmp_path):
         (tmp_path / "data.jsonl").write_text('{"content": "hello"}\n')
         readme_text = (
