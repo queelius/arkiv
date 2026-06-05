@@ -5,9 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-06-05
 
-Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
+Hardening and feature release driven by a multi-agent review
+(`docs/reviews/2026-06-04-multi-agent-review.md`). Closes all five HIGH
+findings plus a long tail of medium/low issues: a lossy `media/`
+roundtrip, silent collection-collision data loss, timezone-wrong
+sorting and slicing, missing divergence detection, and MCP/bundle
+safety gaps. The test suite grew from 305 to 390.
+
+**Potentially breaking:** the MCP `sql_query` tool now returns an object
+`{rows, row_count, truncated}` instead of a bare array; timestamps are
+normalized to UTC in the database `timestamp` column on import (the
+exact original is preserved in `timestamp_original` and written back on
+export); and importing two collections that resolve to the same name now
+raises a clear error instead of silently overwriting one.
 
 ### Security
 
