@@ -478,12 +478,14 @@ arkiv convert archive.db 2024/ --since 2024-01-01 --until 2024-12-31  # temporal
 arkiv convert archive.db bundle.zip                  # database → zipped bundle
 arkiv convert bundle.tar.gz archive.db               # bundle → database
 
-# Query and inspect (directory and JSONL inputs auto-create arkiv.db on demand)
+# Query and inspect (directory and JSONL inputs auto-create arkiv.db on demand,
+# and rebuild it automatically when a source file is newer than the cache)
 arkiv query archive.db "SELECT ..."                  # SQL against database
-arkiv query ./archive/ "SELECT ..."                  # auto-creates arkiv.db, then queries
+arkiv query ./archive/ "SELECT ..."                  # auto-creates/refreshes arkiv.db, then queries
 arkiv query conversations.jsonl "SELECT ..."         # auto-creates sibling .db, then queries
 arkiv schema conversations.jsonl                     # print auto-discovered schema
 arkiv info archive.db                                # collection counts and overview
+arkiv status ./archive/                              # is the directory in sync with its arkiv.db?
 
 # Validation and repair
 arkiv detect conversations.jsonl                     # check arkiv format compliance

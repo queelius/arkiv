@@ -517,10 +517,9 @@ class TestAutoCreateDb:
         # First query creates the db
         run_arkiv("query", str(archive), "SELECT content FROM records")
 
-        # Modify the JSONL (db is now stale, but we don't auto-refresh)
-        (archive / "data.jsonl").write_text('{"content": "second"}\n')
-
-        # Second query uses existing db (returns old data)
+        # Second query, directory unchanged: reuses the existing db.
+        # (When the directory DOES change, the db is rebuilt instead;
+        # see TestAutoDbFreshness.)
         result = run_arkiv("query", str(archive), "SELECT content FROM records")
         assert result.returncode == 0
         assert "first" in result.stdout
@@ -647,3 +646,82 @@ class TestSqliteExtensionRecognition:
         # Friendly guidance, not a raw UTF-8 decode traceback.
         assert "SQLite database" in result.stderr
         assert "0x89" not in result.stderr
+
+
+class TestStatus:
+    def _make_archive(self, tmp_path):
+        d = tmp_path / "arch"
+        d.mkdir()
+        (d / "data.jsonl").write_text('{"content": "a"}\n')
+        (d / "README.md").write_text(
+            "---\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        return d
+
+    def test_status_in_sync(self, tmp_path):
+        d = self._make_archive(tmp_path)
+        run_arkiv("convert", str(d))  # writes arkiv.db inside, fingerprints
+        result = run_arkiv("status", str(d))
+        assert result.returncode == 0, result.stderr
+        out = json.loads(result.stdout)
+        assert out["in_sync"] is True
+        assert "in sync" in out["status"].lower()
+
+    def test_status_directory_changed(self, tmp_path):
+        d = self._make_archive(tmp_path)
+        run_arkiv("convert", str(d))
+        (d / "data.jsonl").write_text(
+            '{"content": "a"}\n{"content": "b"}\n'
+        )
+        result = run_arkiv("status", str(d))
+        out = json.loads(result.stdout)
+        assert out["in_sync"] is False
+        assert out["directory_changed"] is True
+
+    def test_status_no_database(self, tmp_path):
+        d = self._make_archive(tmp_path)  # never converted
+        result = run_arkiv("status", str(d))
+        assert result.returncode == 0
+        out = json.loads(result.stdout)
+        assert "no database" in out["status"].lower()
+
+
+class TestAutoDbFreshness:
+    def test_query_rebuilds_stale_autodb_after_edit(self, tmp_path):
+        import os
+
+        d = tmp_path / "arch"
+        d.mkdir()
+        (d / "data.jsonl").write_text('{"content": "original"}\n')
+        (d / "README.md").write_text(
+            "---\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        # First query auto-creates arkiv.db.
+        r1 = run_arkiv("query", str(d), "SELECT content FROM records")
+        assert "original" in r1.stdout
+
+        # Edit the authoritative JSONL and make it newer than the db.
+        (d / "data.jsonl").write_text('{"content": "updated"}\n')
+        db_file = d / "arkiv.db"
+        future = db_file.stat().st_mtime + 100
+        os.utime(d / "data.jsonl", (future, future))
+
+        # Re-query: must reflect the edit (rebuilt), not the stale cache.
+        r2 = run_arkiv("query", str(d), "SELECT content FROM records")
+        assert "updated" in r2.stdout
+        assert "original" not in r2.stdout
+
+    def test_query_reuses_fresh_autodb(self, tmp_path):
+        # If the directory is unchanged, the cached db is reused (the .db
+        # mtime stays put, i.e. it was not rebuilt).
+        d = tmp_path / "arch"
+        d.mkdir()
+        (d / "data.jsonl").write_text('{"content": "x"}\n')
+        (d / "README.md").write_text(
+            "---\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        run_arkiv("query", str(d), "SELECT content FROM records")
+        mtime1 = (d / "arkiv.db").stat().st_mtime
+        run_arkiv("query", str(d), "SELECT content FROM records")
+        mtime2 = (d / "arkiv.db").stat().st_mtime
+        assert mtime1 == mtime2

@@ -11,6 +11,15 @@ Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
 
 ### Added
 
+- `arkiv status <dir>` reports whether an archive directory and its
+  `arkiv.db` are in sync. A directory-to-db conversion now records a
+  content fingerprint (`_metadata['source_fingerprint']`) over the README,
+  schema.yaml, JSONL collections, and the media/ subtree, and resets an
+  insert-since-convert counter that `insert_record` (the `--writable`
+  path) bumps. `status` recomputes the fingerprint and reports in sync,
+  directory modified since last convert, or N database writes not yet
+  exported. This implements the divergence detection that PHILOSOPHY.md
+  described but the tool did not provide.
 - Binary assets are now carried through the database form. A new
   `_assets` table stores the bytes of the `media/` subtree, so a
   `directory -> db -> directory` roundtrip (and the round trip through a
@@ -23,6 +32,11 @@ Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
 
 ### Fixed
 
+- The auto-created `arkiv.db` used by `arkiv query` and `arkiv mcp` on a
+  directory is now rebuilt when any source file is newer than the cache.
+  Previously the stale cache was reused with no freshness check, so a query
+  after editing a JSONL file returned outdated records, contradicting "the
+  directory form is authoritative".
 - `pack_bundle` no longer sweeps derived database files
   (`.db`/`.sqlite`/`.sqlite3`) or dot-prefixed entries (e.g. `.git`,
   `.DS_Store`) into a transport bundle. A bundle serializes the directory

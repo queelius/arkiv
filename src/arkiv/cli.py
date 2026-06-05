@@ -16,6 +16,28 @@ def _is_db_path(path: Path) -> bool:
     return path.suffix.lower() in _DB_EXTENSIONS
 
 
+def _source_changed_since(source_dir, db_path) -> bool:
+    """True if any canonical source file is newer than the cached db.
+
+    A cheap mtime check (no hashing) used to decide whether an auto-created
+    ``arkiv.db`` is stale and must be rebuilt, so queries honor the
+    authoritative directory form.
+    """
+    from .database import iter_source_files
+
+    try:
+        db_mtime = Path(db_path).stat().st_mtime
+    except OSError:
+        return True
+    for _rel, p in iter_source_files(source_dir):
+        try:
+            if p.stat().st_mtime > db_mtime:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def cmd_convert(args):
     """Convert between the two arkiv archive forms.
 
@@ -132,6 +154,8 @@ def cmd_convert(args):
                         f"{input_path}"
                     )
                 db.import_assets(input_path)
+            # Record a fingerprint so `arkiv status` can detect later drift.
+            db.store_source_fingerprint(input_path)
         finally:
             db.close()
         print(f"Converted {input_path} → {output} ({count} records)")
@@ -204,6 +228,10 @@ def _resolve_db(path_str, writable=False):
 
     if path.is_dir():
         db_path = path / "arkiv.db"
+        if db_path.exists() and _source_changed_since(path, db_path):
+            # The authoritative directory changed since this cache was built;
+            # rebuild so queries never return stale records.
+            db_path.unlink()
         if not db_path.exists():
             db = Database(db_path)
             readme = path / "README.md"
@@ -213,6 +241,7 @@ def _resolve_db(path_str, writable=False):
                 for jsonl in sorted(path.glob("*.jsonl")):
                     db.import_jsonl(jsonl)
                 db.import_assets(path)
+            db.store_source_fingerprint(path)
             if not writable:
                 db.close()
                 return Database(db_path, read_only=True)
@@ -238,6 +267,91 @@ def cmd_query(args):
     results = db.query(args.sql)
     db.close()
     print(json.dumps(results, indent=2, default=str))
+
+
+def _status_text(st) -> str:
+    """Human-readable summary line from a sync_status() dict."""
+    n = st["unexported_writes"]
+    if not st["has_fingerprint"]:
+        return (
+            "unknown (no recorded source fingerprint; run "
+            "`arkiv convert` on the directory to record one)"
+        )
+    if st["directory_changed"] and n:
+        return (
+            f"diverged (directory modified AND {n} database write(s) "
+            "not yet exported)"
+        )
+    if st["directory_changed"]:
+        return (
+            "directory modified since last convert (the directory form is "
+            "authoritative; run `arkiv convert <dir>` to rebuild the database)"
+        )
+    if n:
+        return (
+            f"{n} database record(s) written since last convert, not yet "
+            "exported (run `arkiv convert <db> <dir>` to write them back)"
+        )
+    return "in sync"
+
+
+def cmd_status(args):
+    """Report whether a directory and its arkiv.db are in sync."""
+    from .database import Database
+
+    input_path = Path(args.input)
+
+    if _is_db_path(input_path):
+        if not input_path.exists():
+            raise FileNotFoundError(f"Database not found: {input_path}")
+        db = Database(input_path, read_only=True)
+        writes = db.get_unexported_writes()
+        has_fp = db.get_metadata_value("source_fingerprint") is not None
+        db.close()
+        out = {
+            "database": str(input_path),
+            "source": None,
+            "directory_changed": None,
+            "unexported_writes": writes,
+            "in_sync": None,
+            "status": (
+                f"{writes} database record(s) written since last convert"
+                if writes
+                else "no writes since last convert (source directory "
+                "unknown; cannot verify directory drift)"
+            ),
+        }
+        print(json.dumps(out, indent=2))
+        return
+
+    if not input_path.is_dir():
+        raise ValueError(
+            f"status expects a directory or a database path, got: {input_path}"
+        )
+
+    db_path = input_path / "arkiv.db"
+    if not db_path.exists():
+        out = {
+            "database": None,
+            "source": str(input_path),
+            "in_sync": None,
+            "status": "no database (run `arkiv convert <dir>` to create one)",
+        }
+        print(json.dumps(out, indent=2))
+        return
+
+    db = Database(db_path, read_only=True)
+    st = db.sync_status(input_path)
+    db.close()
+    out = {
+        "database": str(db_path),
+        "source": str(input_path),
+        "directory_changed": st["directory_changed"],
+        "unexported_writes": st["unexported_writes"],
+        "in_sync": st["in_sync"],
+        "status": _status_text(st),
+    }
+    print(json.dumps(out, indent=2))
 
 
 def cmd_info(args):
@@ -515,6 +629,16 @@ def main():
     )
     p_info.add_argument("input", help="JSONL file or SQLite database")
     p_info.set_defaults(func=cmd_info)
+
+    # status
+    p_status = subparsers.add_parser(
+        "status",
+        help="Report whether a directory and its arkiv.db are in sync",
+    )
+    p_status.add_argument(
+        "input", help="Archive directory (checks its arkiv.db) or a .db path"
+    )
+    p_status.set_defaults(func=cmd_status)
 
     # detect
     p_detect = subparsers.add_parser(

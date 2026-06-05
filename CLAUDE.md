@@ -91,7 +91,9 @@ Key behaviors:
 
 ### CLI (`cli.py`)
 
-Subcommands: `convert`, `schema`, `query`, `info`, `detect`, `fix`, `mcp`.
+Subcommands: `convert`, `schema`, `query`, `info`, `status`, `detect`, `fix`, `mcp`.
+
+`status DIR` reports whether `DIR` and its `arkiv.db` are in sync (via `Database.sync_status()`): it recomputes the directory's content fingerprint and compares it to the one stored at the last conversion (`_metadata['source_fingerprint']`), and reads `_metadata['inserts_since_convert']` (bumped by `insert_record`). Directory-to-db conversions call `store_source_fingerprint()`. The auto-db used by `query`/`mcp` is rebuilt when `_source_changed_since()` finds any source file newer than the cache (a cheap mtime check), so reads never return records contradicting the authoritative directory.
 
 `convert` is bidirectional: auto-detects direction from the input type. A `.db`/`.sqlite`/`.sqlite3` input produces a directory (or bundle if the output ends in `.zip`/`.tar.gz`/`.tgz`); anything else (directory, `.jsonl`, `.md`, bundle) produces a database. Output is positional and optional: a directory input with no output writes `arkiv.db` inside the directory; a `.db` input with no output writes to `./exported/`. `query` and `mcp` accept directories and JSONL files too, auto-creating `arkiv.db` on demand.
 

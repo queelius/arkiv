@@ -1,9 +1,10 @@
 """SQLite database for arkiv records."""
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import yaml
 
@@ -34,6 +35,46 @@ def _is_within(child: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+# Derived database forms are regenerable, so they are excluded from the
+# source fingerprint and from pack_bundle. Dot-prefixed entries are noise.
+_DERIVED_DB_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
+
+
+def iter_source_files(source_dir: Union[str, Path]) -> Iterator[Tuple[str, Path]]:
+    """Yield ``(relposix, path)`` for each canonical source file.
+
+    Walks *source_dir* recursively, skipping derived database files
+    (``.db``/``.sqlite``/``.sqlite3``) and dot-prefixed entries. This is the
+    set of files that constitute the authoritative directory form: README,
+    schema.yaml, the JSONL collections, and the media/ subtree.
+    """
+    source_dir = Path(source_dir)
+    for p in sorted(source_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(source_dir)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        if p.suffix.lower() in _DERIVED_DB_SUFFIXES:
+            continue
+        yield rel.as_posix(), p
+
+
+def _source_fingerprint(source_dir: Union[str, Path]) -> str:
+    """A content hash of the directory form, stable across re-conversions.
+
+    SHA-256 over each source file's relative path and its own content hash,
+    in sorted path order. Two directories with identical canonical files
+    (regardless of the derived .db) produce the same fingerprint.
+    """
+    h = hashlib.sha256()
+    for relposix, p in iter_source_files(source_dir):
+        h.update(relposix.encode("utf-8"))
+        h.update(b"\0")
+        h.update(hashlib.sha256(p.read_bytes()).digest())
+    return h.hexdigest()
 
 
 def _collection_name_from_path(path: str) -> str:
@@ -190,11 +231,75 @@ class Database:
             "VALUES (?, ?, ?, ?, ?, ?)",
             (collection, mimetype, None, content, timestamp, metadata_json),
         )
+        # Track that the database has diverged from the directory form since
+        # the last conversion, so `arkiv status` can surface unexported writes.
+        self._bump_inserts_counter()
         self.conn.commit()
         return {
             "id": cursor.lastrowid,
             "collection": collection,
             "timestamp": timestamp,
+        }
+
+    def get_metadata_value(self, key: str) -> Optional[str]:
+        """Read a single value from the _metadata KV table, or None."""
+        try:
+            row = self.conn.execute(
+                "SELECT value FROM _metadata WHERE key = ?", (key,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return row[0] if row else None
+
+    def get_unexported_writes(self) -> int:
+        """How many records were inserted since the last conversion."""
+        try:
+            return int(self.get_metadata_value("inserts_since_convert") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _bump_inserts_counter(self) -> None:
+        """Increment the insert-since-convert counter (caller commits)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO _metadata (key, value) "
+            "VALUES ('inserts_since_convert', ?)",
+            (str(self.get_unexported_writes() + 1),),
+        )
+
+    def store_source_fingerprint(self, source_dir: Union[str, Path]) -> str:
+        """Record a content fingerprint of the source directory.
+
+        Called when converting a directory into this database. Stores the
+        fingerprint in _metadata and resets the insert-since-convert counter,
+        marking the two forms as in sync as of now. Returns the fingerprint.
+        """
+        fp = _source_fingerprint(Path(source_dir))
+        upsert = "INSERT OR REPLACE INTO _metadata (key, value) VALUES (?, ?)"
+        self.conn.execute(upsert, ("source_fingerprint", fp))
+        self.conn.execute(upsert, ("inserts_since_convert", "0"))
+        self.conn.commit()
+        return fp
+
+    def sync_status(self, source_dir: Union[str, Path]) -> Dict[str, Any]:
+        """Report whether this database is in sync with *source_dir*.
+
+        Compares the directory's current content fingerprint against the one
+        stored at the last conversion, and reads the insert-since-convert
+        counter. ``in_sync`` is true only when a fingerprint was recorded, the
+        directory is unchanged, and no records were written since.
+        """
+        stored = self.get_metadata_value("source_fingerprint")
+        inserts = self.get_unexported_writes()
+        has_fp = stored is not None
+        directory_changed = bool(
+            has_fp and _source_fingerprint(Path(source_dir)) != stored
+        )
+        in_sync = bool(has_fp and not directory_changed and inserts == 0)
+        return {
+            "has_fingerprint": has_fp,
+            "directory_changed": directory_changed,
+            "unexported_writes": inserts,
+            "in_sync": in_sync,
         }
 
     def refresh_schema(self, collection: str) -> None:
