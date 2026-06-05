@@ -11,6 +11,11 @@ Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
 
 ### Security
 
+- Bundle extraction (`unpack_bundle`) now bounds the entry count and total
+  uncompressed size (read from archive metadata before extracting) to
+  resist zip/tar bombs, and its path-escape check uses proper containment
+  (`relative_to`) instead of a string prefix, closing a sibling-prefix
+  bypass (`/tmp/out` vs `/tmp/out-evil`).
 - The auto-db rebuild (added for directory freshness) no longer destroys a
   database that holds unexported `--writable` writes. If the directory
   changed but `arkiv.db` has pending `write_record` inserts, `query`/`mcp`

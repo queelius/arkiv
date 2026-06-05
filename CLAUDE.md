@@ -132,9 +132,12 @@ serializes the directory form, not its regenerable cache or hidden noise.
 Stdlib-only: zip with DEFLATE, tar with gzip. Modern formats like zstd
 or xz are deliberately excluded so bundles stay openable on any
 machine for decades. Both extractors apply path-traversal protection
-(rejects entries that resolve outside the target directory) plus, on
-Python 3.12+, the native `filter="data"` safe-extraction mode. This
-matters because bundles may come from untrusted sources.
+(rejects entries that resolve outside the target directory, via
+`_within` containment, not a string prefix), bound the entry count and
+total uncompressed size (`unpack_bundle(..., max_entries=, max_total_bytes=)`,
+defaults `_MAX_BUNDLE_ENTRIES`/`_MAX_BUNDLE_BYTES`) to resist zip/tar
+bombs, and on Python 3.12+ use the native `filter="data"` safe-extraction
+mode. This matters because bundles may come from untrusted sources.
 
 `arkiv query` and `arkiv mcp` deliberately do NOT auto-extract
 bundles. They reject bundle input with a helpful error directing the

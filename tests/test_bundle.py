@@ -114,6 +114,57 @@ class TestSafeExtraction:
         with pytest.raises(ValueError, match="path escape"):
             unpack_bundle(bad, tmp_path / "dst")
 
+    def test_zip_rejects_sibling_prefix_escape(self, tmp_path):
+        # Classic startswith() flaw: target /tmp/out, entry resolving to
+        # /tmp/out-evil/x. A string-prefix check accepts it; a proper
+        # containment check rejects it.
+        target = tmp_path / "out"
+        bad = tmp_path / "bad.zip"
+        with zipfile.ZipFile(bad, "w") as zf:
+            zf.writestr("../out-evil/x.txt", "pwn")
+        with pytest.raises(ValueError, match="path escape"):
+            unpack_bundle(bad, target)
+        assert not (tmp_path / "out-evil").exists()
+
+
+class TestDecompressionLimits:
+    """Bundles may come from untrusted sources; extraction must bound the
+    entry count and total uncompressed size to resist zip/tar bombs."""
+
+    def _make_zip(self, tmp_path, n_files, size_each=1):
+        src = tmp_path / "src"
+        src.mkdir()
+        for i in range(n_files):
+            (src / f"f{i}.txt").write_text("x" * size_each)
+        bundle = tmp_path / "a.zip"
+        pack_bundle(src, bundle)
+        return bundle
+
+    def test_rejects_too_many_entries(self, tmp_path):
+        bundle = self._make_zip(tmp_path, n_files=5)
+        with pytest.raises(ValueError, match="entries|too many"):
+            unpack_bundle(bundle, tmp_path / "dst", max_entries=2)
+
+    def test_rejects_oversize_total(self, tmp_path):
+        bundle = self._make_zip(tmp_path, n_files=1, size_each=1000)
+        with pytest.raises(ValueError, match="size|large|bomb"):
+            unpack_bundle(bundle, tmp_path / "dst", max_total_bytes=100)
+
+    def test_within_limits_extracts_normally(self, tmp_path):
+        bundle = self._make_zip(tmp_path, n_files=3, size_each=10)
+        dst = tmp_path / "dst"
+        unpack_bundle(bundle, dst, max_entries=100, max_total_bytes=10_000)
+        assert (dst / "f0.txt").read_text() == "x" * 10
+
+    def test_tar_rejects_oversize_total(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "big.txt").write_text("y" * 1000)
+        bundle = tmp_path / "a.tar.gz"
+        pack_bundle(src, bundle)
+        with pytest.raises(ValueError, match="size|large|bomb"):
+            unpack_bundle(bundle, tmp_path / "dst", max_total_bytes=100)
+
 
 # ── CLI integration tests ──────────────────────────────────────
 

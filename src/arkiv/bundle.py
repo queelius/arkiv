@@ -114,8 +114,26 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
                 tf.add(p, arcname=arcname)
 
 
-def unpack_bundle(bundle: PathLike, target_dir: PathLike) -> None:
-    """Extract a bundle (zip or tar.gz) into *target_dir*."""
+# Bundles may come from untrusted sources, so extraction is bounded to
+# resist zip/tar bombs: a cap on the number of entries and on the total
+# uncompressed size (both read from archive metadata before extracting).
+_MAX_BUNDLE_ENTRIES = 200_000
+_MAX_BUNDLE_BYTES = 8 * 1024**3  # 8 GiB uncompressed
+
+
+def unpack_bundle(
+    bundle: PathLike,
+    target_dir: PathLike,
+    *,
+    max_entries: int = _MAX_BUNDLE_ENTRIES,
+    max_total_bytes: int = _MAX_BUNDLE_BYTES,
+) -> None:
+    """Extract a bundle (zip or tar.gz) into *target_dir*.
+
+    Rejects entries that would escape *target_dir*, and refuses archives
+    whose entry count or total uncompressed size exceed the given limits
+    (bomb protection).
+    """
     bundle = Path(bundle)
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -126,41 +144,74 @@ def unpack_bundle(bundle: PathLike, target_dir: PathLike) -> None:
         )
     if fmt == "zip":
         with zipfile.ZipFile(bundle) as zf:
-            _safe_extract_zip(zf, target_dir)
+            _safe_extract_zip(zf, target_dir, max_entries, max_total_bytes)
     else:
         with tarfile.open(bundle, "r:gz") as tf:
-            _safe_extract_tar(tf, target_dir)
+            _safe_extract_tar(tf, target_dir, max_entries, max_total_bytes)
 
 
-def _safe_extract_zip(zf: zipfile.ZipFile, target_dir: Path) -> None:
-    """Extract a zip, rejecting entries that would escape target_dir
-    (e.g. absolute paths or ``..`` traversal)."""
-    root = target_dir.resolve()
-    for info in zf.infolist():
-        dest = (target_dir / info.filename).resolve()
-        if not str(dest).startswith(str(root)):
+def _safe_extract_zip(
+    zf: zipfile.ZipFile,
+    target_dir: Path,
+    max_entries: int,
+    max_total_bytes: int,
+) -> None:
+    """Extract a zip, rejecting path-escape entries and bombs."""
+    infos = zf.infolist()
+    if len(infos) > max_entries:
+        raise ValueError(
+            f"bundle has too many entries ({len(infos)} > {max_entries}); "
+            f"possible zip bomb"
+        )
+    total = 0
+    for info in infos:
+        dest = target_dir / info.filename
+        if not _within(dest, target_dir):
             raise ValueError(
                 f"unsafe zip entry (path escape): {info.filename!r}"
+            )
+        total += info.file_size
+        if total > max_total_bytes:
+            raise ValueError(
+                f"bundle uncompressed size exceeds limit "
+                f"({max_total_bytes} bytes); possible zip bomb"
             )
     zf.extractall(target_dir)
 
 
-def _safe_extract_tar(tf: tarfile.TarFile, target_dir: Path) -> None:
-    """Extract a tar, rejecting entries that would escape target_dir."""
-    root = target_dir.resolve()
-    for member in tf.getmembers():
-        dest = (target_dir / member.name).resolve()
-        if not str(dest).startswith(str(root)):
+def _safe_extract_tar(
+    tf: tarfile.TarFile,
+    target_dir: Path,
+    max_entries: int,
+    max_total_bytes: int,
+) -> None:
+    """Extract a tar, rejecting path-escape entries, escaping links, and bombs."""
+    members = tf.getmembers()
+    if len(members) > max_entries:
+        raise ValueError(
+            f"bundle has too many entries ({len(members)} > {max_entries}); "
+            f"possible tar bomb"
+        )
+    total = 0
+    for member in members:
+        dest = target_dir / member.name
+        if not _within(dest, target_dir):
             raise ValueError(
                 f"unsafe tar entry (path escape): {member.name!r}"
             )
         # No symlinks escaping either
         if member.issym() or member.islnk():
-            link = (target_dir / member.linkname).resolve()
-            if not str(link).startswith(str(root)):
+            link = target_dir / member.linkname
+            if not _within(link, target_dir):
                 raise ValueError(
                     f"unsafe tar link target: {member.linkname!r}"
                 )
+        total += member.size
+        if total > max_total_bytes:
+            raise ValueError(
+                f"bundle uncompressed size exceeds limit "
+                f"({max_total_bytes} bytes); possible tar bomb"
+            )
     # Python 3.12+ accepts filter="data" which also enforces safety; pass it
     # when available to silence the 3.14 deprecation warning and get native
     # protection. Our per-member checks above still run as belt-and-suspenders.
