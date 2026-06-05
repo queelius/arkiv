@@ -146,7 +146,7 @@ working formats. See `docs/PHILOSOPHY.md` for the rationale.
 
 ### MCP Server (`server.py`)
 
-`ArkivServer` wraps a read-only `Database`. `run_mcp_server()` uses FastMCP (requires `pip install arkiv[mcp]`). All metadata is derived from the DB. No external files are needed at serve time.
+`ArkivServer` wraps a read-only `Database`. `run_mcp_server()` uses FastMCP (requires `pip install arkiv[mcp]`). All metadata is derived from the DB. No external files are needed at serve time. The MCP tool bodies live in testable `ArkivServer` methods (`get_manifest`, `get_schema`, `run_sql_capped`, `write_record`); the `@mcp.tool` closures are thin wrappers. `run_sql_capped` bounds rows returned to the LLM (default `DEFAULT_MAX_ROWS`, via `Database.query_bounded`) and returns `{rows, row_count, truncated}`; `write_record` returns the inserted record or `{"error": ...}` (and refuses when the server is read-only).
 
 ### Public API
 

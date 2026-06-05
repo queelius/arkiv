@@ -401,7 +401,22 @@ class Database:
         return sqlite3.SQLITE_OK if action in allowed else sqlite3.SQLITE_DENY
 
     def query(self, sql: str) -> List[Dict[str, Any]]:
-        """Run a read-only SQL query. Returns list of dicts."""
+        """Run a read-only SQL query. Returns list of dicts (unbounded)."""
+        rows, _ = self._run_query(sql, max_rows=None)
+        return rows
+
+    def query_bounded(
+        self, sql: str, max_rows: int
+    ) -> "tuple[List[Dict[str, Any]], bool]":
+        """Run a read-only query, returning at most *max_rows* rows.
+
+        Returns ``(rows, truncated)`` and fetches at most ``max_rows + 1``
+        rows internally, so a broad query cannot materialize an unbounded
+        result. Used by the MCP server to cap what an LLM can pull at once.
+        """
+        return self._run_query(sql, max_rows=max_rows)
+
+    def _run_query(self, sql, max_rows):
         normalized = sql.strip().upper()
         if not normalized.startswith(("SELECT", "WITH")):
             raise ValueError("Only SELECT queries are allowed")
@@ -414,7 +429,13 @@ class Database:
                 raise ValueError("Only SELECT queries are allowed")
 
             columns = [desc[0] for desc in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            if max_rows is None:
+                rows = cursor.fetchall()
+                return ([dict(zip(columns, row)) for row in rows], False)
+            fetched = cursor.fetchmany(max_rows + 1)
+            truncated = len(fetched) > max_rows
+            rows = fetched[:max_rows]
+            return ([dict(zip(columns, row)) for row in rows], truncated)
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
             raise ValueError(str(e)) from None
         finally:

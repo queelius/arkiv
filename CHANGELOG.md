@@ -11,6 +11,11 @@ Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
 
 ### Security
 
+- The MCP `sql_query` tool now caps how many rows it returns to the LLM
+  (default 1000, fetched bounded) and reports `{rows, row_count, truncated}`
+  with a paging note, so a broad `SELECT` cannot exfiltrate or exhaust
+  memory on the whole archive in one call. The CLI `arkiv query` is
+  unchanged (a deliberate terminal query, returns a bare array).
 - Bundle extraction (`unpack_bundle`) now bounds the entry count and total
   uncompressed size (read from archive metadata before extracting) to
   resist zip/tar bombs, and its path-escape check uses proper containment

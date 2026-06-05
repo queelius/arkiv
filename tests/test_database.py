@@ -123,6 +123,26 @@ class TestQuery:
         assert results[0]["mimetype"] == "text/plain"
         db.close()
 
+    def test_query_bounded_truncates(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text("".join(f'{{"content": "r{i}"}}\n' for i in range(10)))
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+        rows, truncated = db.query_bounded("SELECT content FROM records", 4)
+        db.close()
+        assert len(rows) == 4
+        assert truncated is True
+
+    def test_query_bounded_not_truncated(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "only"}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="test")
+        rows, truncated = db.query_bounded("SELECT content FROM records", 10)
+        db.close()
+        assert len(rows) == 1
+        assert truncated is False
+
     def test_query_rejects_writes(self, tmp_path):
         db_path = tmp_path / "test.db"
         db = Database(db_path)

@@ -430,7 +430,7 @@ Returns the data dictionary for one or all collections.
 Runs a read-only SQL query. Use `metadata->>'key'` or `json_extract(metadata, '$.key')` to query metadata fields.
 
 **Parameters:** `query` (string, SELECT only)
-**Returns:** JSON array of row objects.
+**Returns:** JSON object `{"rows": [...], "row_count": N, "truncated": bool}`. The result is capped (default 1000 rows) so a broad query cannot pull or exhaust memory on the entire archive in one call; when `truncated` is true a `note` field advises adding `LIMIT`/`OFFSET` to page. (The CLI `arkiv query` returns a bare array and is not capped, since it is a deliberate terminal query.)
 
 #### `write_record(collection, content, mimetype?, timestamp?, metadata?)`
 
