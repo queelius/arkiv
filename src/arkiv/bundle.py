@@ -84,6 +84,10 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
 
     def _members():
         for p in sorted(directory.rglob("*")):
+            # Do not follow symlinks: a symlink to a file outside the archive
+            # (or to /dev/zero) must not be packed by its target's content.
+            if p.is_symlink():
+                continue
             if p.is_file():
                 rel = p.relative_to(directory)
                 if _should_pack(rel):

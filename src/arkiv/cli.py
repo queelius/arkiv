@@ -229,8 +229,21 @@ def _resolve_db(path_str, writable=False):
     if path.is_dir():
         db_path = path / "arkiv.db"
         if db_path.exists() and _source_changed_since(path, db_path):
-            # The authoritative directory changed since this cache was built;
-            # rebuild so queries never return stale records.
+            # The authoritative directory changed since this cache was built.
+            # Rebuild so reads never return stale records, BUT refuse to
+            # destroy a database that holds unexported --writable writes.
+            probe = Database(db_path, read_only=True)
+            try:
+                pending = probe.get_unexported_writes()
+            finally:
+                probe.close()
+            if pending:
+                raise ValueError(
+                    f"{path}: the directory changed but its arkiv.db has "
+                    f"{pending} unexported write(s). Export them first with "
+                    f"`arkiv convert {db_path} {path}`, or delete {db_path} "
+                    f"to discard them, then retry."
+                )
             db_path.unlink()
         if not db_path.exists():
             db = Database(db_path)

@@ -52,6 +52,12 @@ def iter_source_files(source_dir: Union[str, Path]) -> Iterator[Tuple[str, Path]
     """
     source_dir = Path(source_dir)
     for p in sorted(source_dir.rglob("*")):
+        # Never follow symlinks: arkiv archives are plain files, and an
+        # archive from an untrusted source could point a symlink at
+        # /dev/zero (DoS) or a file outside the archive (info leak into the
+        # fingerprint). A symlink is not part of the canonical directory form.
+        if p.is_symlink():
+            continue
         if not p.is_file():
             continue
         rel = p.relative_to(source_dir)

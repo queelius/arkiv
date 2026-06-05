@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
 
+### Security
+
+- The auto-db rebuild (added for directory freshness) no longer destroys a
+  database that holds unexported `--writable` writes. If the directory
+  changed but `arkiv.db` has pending `write_record` inserts, `query`/`mcp`
+  now raise an actionable error (export or delete first) instead of
+  silently unlinking the database and losing the writes.
+- Source-directory walks (`iter_source_files`, used by fingerprinting and
+  `arkiv status`, and `pack_bundle`) no longer follow symlinks. An archive
+  from an untrusted source could otherwise point a symlink at `/dev/zero`
+  (memory-exhaustion DoS) or a file outside the archive (read into the
+  fingerprint or a bundle). Symlinks are not part of the canonical
+  directory form.
+
 ### Added
 
 - `arkiv status <dir>` reports whether an archive directory and its
