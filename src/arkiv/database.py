@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import yaml
 
-from .record import Record, parse_jsonl
+from .record import Record, normalize_timestamp, parse_jsonl
 from .schema import (
     SchemaEntry,
     CollectionSchema,
@@ -137,6 +137,7 @@ class Database:
                 uri TEXT,
                 content TEXT,
                 timestamp TEXT,
+                timestamp_original TEXT,
                 metadata JSON
             );
 
@@ -164,6 +165,12 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_records_timestamp ON records(timestamp);
         """
         )
+        # Migration: pre-existing databases predating timestamp_original get
+        # the column added so the normalized/original split works on them too.
+        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(records)")}
+        if "timestamp_original" not in cols:
+            self.conn.execute("ALTER TABLE records ADD COLUMN timestamp_original TEXT")
+            self.conn.commit()
 
     def import_jsonl(
         self, path: Union[str, Path], collection: Optional[str] = None
@@ -185,14 +192,16 @@ class Database:
 
         count = 0
         for record in parse_jsonl(path):
+            ts_norm, ts_orig = normalize_timestamp(record.timestamp)
             self.conn.execute(
-                "INSERT INTO records (collection, mimetype, uri, content, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO records (collection, mimetype, uri, content, timestamp, timestamp_original, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     collection,
                     record.mimetype,
                     record.uri,
                     record.content,
-                    record.timestamp,
+                    ts_norm,
+                    ts_orig,
                     json.dumps(record.metadata) if record.metadata else None,
                 ),
             )
@@ -235,11 +244,12 @@ class Database:
         if timestamp is None:
             from datetime import datetime, timezone
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ts_norm, ts_orig = normalize_timestamp(timestamp)
         metadata_json = json.dumps(metadata) if metadata else None
         cursor = self.conn.execute(
-            "INSERT INTO records (collection, mimetype, uri, content, timestamp, metadata) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (collection, mimetype, None, content, timestamp, metadata_json),
+            "INSERT INTO records (collection, mimetype, uri, content, timestamp, timestamp_original, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (collection, mimetype, None, content, ts_norm, ts_orig, metadata_json),
         )
         # Track that the database has diverged from the directory form since
         # the last conversion, so `arkiv status` can surface unexported writes.
@@ -248,7 +258,7 @@ class Database:
         return {
             "id": cursor.lastrowid,
             "collection": collection,
-            "timestamp": timestamp,
+            "timestamp": ts_norm,
         }
 
     def get_metadata_value(self, key: str) -> Optional[str]:
@@ -520,6 +530,16 @@ class Database:
             body=meta.get("readme_body", ""),
         )
 
+    def _has_column(self, table: str, column: str) -> bool:
+        """True if *table* has *column* (table name is internal, not input)."""
+        try:
+            cols = {
+                row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")
+            }
+        except sqlite3.OperationalError:
+            return False
+        return column in cols
+
     def export(
         self,
         output_dir: Union[str, Path],
@@ -578,7 +598,19 @@ class Database:
             else:
                 jsonl_path = output_dir / f"{coll_name}.jsonl"
 
-            base_sql = "SELECT mimetype, uri, content, timestamp, metadata FROM records WHERE collection = ?"
+            # Emit the original (pre-normalization) timestamp so the
+            # directory form is lossless, while the WHERE clause still filters
+            # on the normalized UTC `timestamp`. Pre-migration databases
+            # without the column fall back to `timestamp`.
+            ts_expr = (
+                "COALESCE(timestamp_original, timestamp)"
+                if self._has_column("records", "timestamp_original")
+                else "timestamp"
+            )
+            base_sql = (
+                f"SELECT mimetype, uri, content, {ts_expr}, metadata "
+                "FROM records WHERE collection = ?"
+            )
             params: list = [coll_name]
             if time_clause:
                 base_sql += f" AND {time_clause}"

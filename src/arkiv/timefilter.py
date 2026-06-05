@@ -8,6 +8,8 @@ import calendar
 import re
 from typing import List, Optional, Tuple
 
+from .record import normalize_timestamp
+
 # YYYY, YYYY-MM, or YYYY-MM-DD
 _ISO_PREFIX_RE = re.compile(r"^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$")
 
@@ -113,16 +115,19 @@ def build_time_filter(
     clauses = []
     params: List[str] = []
 
+    # Bounds are normalized to UTC the same way stored timestamps are, so an
+    # offset-bearing bound (e.g. ...T00:00:00-05:00) compares correctly. Bare
+    # date prefixes are naive and pass through unchanged.
     if since is not None:
         _validate_time_arg("since", since)
         clauses.append("(timestamp IS NULL OR timestamp >= ?)")
-        params.append(since)
+        params.append(normalize_timestamp(since)[0])
 
     if until is not None:
         _validate_time_arg("until", until)
         if "T" in until:
             clauses.append("(timestamp IS NULL OR timestamp <= ?)")
-            params.append(until)
+            params.append(normalize_timestamp(until)[0])
         else:
             clauses.append("(timestamp IS NULL OR timestamp < ?)")
             params.append(increment_iso_prefix(until))

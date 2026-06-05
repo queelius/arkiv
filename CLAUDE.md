@@ -67,7 +67,7 @@ Two-tier schema: auto-discovered from data and curated from `schema.yaml`.
 ### Database (`database.py`)
 
 SQLite tables:
-- `records` -- (id, collection, mimetype, uri, content, timestamp, metadata JSON)
+- `records` -- (id, collection, mimetype, uri, content, timestamp, timestamp_original, metadata JSON). `timestamp` is normalized to canonical UTC (`...Z`) on import via `normalize_timestamp()` (record.py) so lexicographic order equals chronological order and `--since`/`--until` are correct; `timestamp_original` holds the exact input when it differed (NULL otherwise) and `export()` writes it back (`COALESCE(timestamp_original, timestamp)`) so the directory form is lossless. A migration in `_ensure_tables` adds `timestamp_original` to pre-existing databases.
 - `_schema` -- (collection, key_path, type, count, sample_values, description)
 - `_metadata` -- (key TEXT PRIMARY KEY, value TEXT): stores README frontmatter + body as KV pairs
 - `_assets` -- (path TEXT PRIMARY KEY, content BLOB): the `media/` subtree stored as BLOBs, so the database form is a complete peer of the directory form (media survives a db roundtrip)

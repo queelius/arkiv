@@ -46,6 +46,16 @@ Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
 
 ### Fixed
 
+- Timestamps are normalized to canonical UTC on import, so
+  `ORDER BY timestamp` and `--since`/`--until` are now chronologically
+  correct across timezone offsets and precisions. Previously timestamps
+  were compared lexicographically, so `2024-01-01T08:00:00-05:00` (really
+  13:00Z) sorted before `...T08:00:00Z` (08:00Z), and temporal slices
+  dropped or included boundary records incorrectly. The exact original
+  string is preserved in a new `records.timestamp_original` column and
+  written back on export, so the directory form stays lossless; naive
+  (zoneless) timestamps are left untouched. A migration adds the column to
+  pre-existing databases.
 - The auto-created `arkiv.db` used by `arkiv query` and `arkiv mcp` on a
   directory is now rebuilt when any source file is newer than the cache.
   Previously the stale cache was reused with no freshness check, so a query

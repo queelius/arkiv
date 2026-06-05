@@ -2,7 +2,7 @@
 
 __version__ = "0.2.0"
 
-from .record import Record, parse_record, parse_jsonl
+from .record import Record, normalize_timestamp, parse_record, parse_jsonl
 from .schema import (
     SchemaEntry,
     CollectionSchema,
@@ -15,6 +15,7 @@ from .database import Database
 
 __all__ = [
     "Record",
+    "normalize_timestamp",
     "parse_record",
     "parse_jsonl",
     "SchemaEntry",

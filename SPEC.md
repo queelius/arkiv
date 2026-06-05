@@ -42,7 +42,7 @@ Each line in a JSONL file is one record. A record is a JSON object with these co
 | `mimetype` | string | Standard MIME type (`text/plain`, `audio/wav`, `image/jpeg`, etc.) |
 | `uri` | string | URI reference (`file://`, `http://`, `s3://`, `data:`, etc.) |
 | `content` | string | Inline text content |
-| `timestamp` | string | ISO 8601 datetime |
+| `timestamp` | string | ISO 8601 datetime. The reference implementation normalizes a zoned timestamp (offset or `Z`) to canonical UTC in the database `timestamp` column so that lexicographic order equals chronological order and `--since`/`--until` slices are correct; the exact original string is preserved (in `timestamp_original`) and written back on export, so the directory form is lossless. Naive (zoneless) timestamps are left as-is. |
 | `metadata` | object | Freeform JSON -- everything domain-specific |
 
 **All fields are optional.** A record with only `metadata` is valid. A record with only `content` is valid. An empty object `{}` is valid.
@@ -336,7 +336,8 @@ CREATE TABLE records (
     mimetype TEXT,
     uri TEXT,
     content TEXT,
-    timestamp TEXT,
+    timestamp TEXT,         -- normalized to canonical UTC (...Z) on import
+    timestamp_original TEXT,-- the exact input string, when it differed (else NULL)
     metadata JSON           -- original metadata as JSON string
 );
 
@@ -374,7 +375,7 @@ The `_assets` table carries the archive's binary assets (the `media/` subtree, r
 
 ### Import semantics
 
-- `import_jsonl(path, collection)`: Deletes existing records for the collection (**replace semantics**), then inserts all records from the JSONL file. Pre-computes schema, preserving existing descriptions.
+- `import_jsonl(path, collection)`: Deletes existing records for the collection (**replace semantics**), then inserts all records from the JSONL file. Each record's `timestamp` is normalized to canonical UTC (with the original preserved in `timestamp_original` when it differs). Pre-computes schema, preserving existing descriptions.
 - `import_readme(path)`: Parses README frontmatter, imports each JSONL from `contents`, merges curated schema from sibling schema.yaml, stores README metadata, and slurps the `media/` subtree into `_assets`. Handles nested archives: if a contents entry is a directory, the method recurses into its subdirectory, imports that subdirectory's README without storing its metadata in the top-level `_metadata` table. Two contents entries that resolve to the same collection name (the bare filename stem) raise rather than silently overwriting one another.
 - `import_assets(dir)`: Stores the bytes of every file under `dir/media/` into `_assets` (replace semantics). Called by `import_readme` and by the directory and bundle conversion paths.
 - Unknown top-level fields in records are merged into the `metadata` JSON column.
@@ -384,6 +385,7 @@ The `_assets` table carries the archive's binary assets (the `media/` subtree, r
 - Writes one JSONL file per collection
 - Writes README.md from stored `_metadata`
 - Writes schema.yaml from `_schema` table
+- Writes each record's original timestamp (`COALESCE(timestamp_original, timestamp)`) so the directory form preserves the user's exact input, while `--since`/`--until` filter on the normalized UTC `timestamp`
 - Reconstructs binary assets: every `_assets` row is written back to `output_dir/<path>` (recreating `media/`). Asset paths are validated to stay within the output directory. Assets are written for temporal slices too, so a sliced export never leaves a referenced resource dangling
 - Roundtrip is lossless: a directory converted to a database and back produces equivalent files, including the `media/` subtree
 - Exported READMEs contain auto-generated schema summary tables wrapped in `<!-- arkiv:schema:begin -->` / `<!-- arkiv:schema:end -->` sentinel comments. On re-export, the region between sentinels is replaced; prose outside sentinels is preserved
