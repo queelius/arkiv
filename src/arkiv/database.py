@@ -56,7 +56,11 @@ def iter_source_files(source_dir: Union[str, Path]) -> Iterator[Tuple[str, Path]
         # archive from an untrusted source could point a symlink at
         # /dev/zero (DoS) or a file outside the archive (info leak into the
         # fingerprint). A symlink is not part of the canonical directory form.
+        # rglob does not descend symlinked directories, but we also resolve
+        # and contain each path so the guarantee never depends on that detail.
         if p.is_symlink():
+            continue
+        if not _is_within(p, source_dir):
             continue
         if not p.is_file():
             continue

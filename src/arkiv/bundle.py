@@ -52,6 +52,15 @@ def is_bundle(path: PathLike) -> bool:
 _DERIVED_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
 
 
+def _within(child: Path, root: Path) -> bool:
+    """True if ``child`` resolves to a location inside ``root``."""
+    try:
+        child.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def _should_pack(rel: Path) -> bool:
     """Whether an archive-relative path belongs in a transport bundle."""
     if any(part.startswith(".") for part in rel.parts):
@@ -86,7 +95,9 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
         for p in sorted(directory.rglob("*")):
             # Do not follow symlinks: a symlink to a file outside the archive
             # (or to /dev/zero) must not be packed by its target's content.
-            if p.is_symlink():
+            # rglob does not descend symlinked directories; the resolve-and-
+            # contain check makes that guarantee explicit either way.
+            if p.is_symlink() or not _within(p, directory):
                 continue
             if p.is_file():
                 rel = p.relative_to(directory)
