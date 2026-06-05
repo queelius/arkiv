@@ -104,9 +104,15 @@ def discover_schema_from_metadata(
             continue
         for key, value in _flatten_metadata(metadata).items():
             key_counts[key] = key_counts.get(key, 0) + 1
-            key_types[key] = _json_type(value)
+            # type: first non-null occurrence (only "null" if every observed
+            # value is null), keeping it consistent with the example field
+            # below and with SPEC 2.3. Previously the LAST type won, so a
+            # string-then-number key reported number while example stayed the
+            # first string -- the two described different records.
+            if key not in key_types or key_types[key] == "null":
+                key_types[key] = _json_type(value)
 
-            if key not in key_example:
+            if value is not None and key not in key_example:
                 key_example[key] = value
 
             # Track enumerable values; set to None for non-scalar types
@@ -136,7 +142,7 @@ def discover_schema_from_metadata(
             entry = SchemaEntry(
                 type=key_types[key],
                 count=key_counts[key],
-                example=key_example[key],
+                example=key_example.get(key),
             )
         result[key] = entry
 

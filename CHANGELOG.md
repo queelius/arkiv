@@ -46,6 +46,16 @@ Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
 
 ### Fixed
 
+- Schema discovery now records a metadata key's `type` from its first
+  non-null occurrence (consistent with the `example` field), matching
+  SPEC 2.3. Previously the LAST type won, so a string-then-number key
+  reported `type=number` while `example` stayed the first string, the two
+  describing different records; a leading `null` also no longer locks a
+  key's type to `null` when a real value follows.
+- An unknown top-level field that collides with a key already inside
+  `metadata` no longer clobbers the structured value: the explicit
+  `metadata` value wins, and `arkiv detect` warns about the collision.
+  Previously the top-level value silently overwrote the metadata key.
 - Timestamps are normalized to canonical UTC on import, so
   `ORDER BY timestamp` and `--since`/`--until` are now chronologically
   correct across timezone offsets and precisions. Previously timestamps

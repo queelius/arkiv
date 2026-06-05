@@ -96,6 +96,20 @@ class TestParseRecord:
         r = parse_record(json.loads(line))
         assert r.content == "hello"
 
+    def test_metadata_wins_over_colliding_top_level_field(self):
+        # An explicit metadata key must NOT be clobbered by a stray top-level
+        # field of the same name. Previously the top-level value won, silently
+        # destroying the structured value.
+        data = {"role": "user", "metadata": {"role": "system"}}
+        r = parse_record(data)
+        assert r.metadata["role"] == "system"
+
+    def test_non_colliding_unknown_still_merged(self):
+        data = {"role": "user", "metadata": {"other": "x"}}
+        r = parse_record(data)
+        assert r.metadata["role"] == "user"
+        assert r.metadata["other"] == "x"
+
 
 class TestParseJsonl:
     def test_parse_lines(self, tmp_path):

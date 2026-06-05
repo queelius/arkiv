@@ -76,14 +76,17 @@ def parse_record(data: Dict[str, Any]) -> Record:
     """Parse a dict into a Record.
 
     Known fields (mimetype, uri, content, timestamp, metadata) are
-    extracted. Unknown fields are merged into metadata.
+    extracted. Unknown fields are merged into metadata, but an explicit
+    ``metadata`` key wins over a colliding top-level field: the structured
+    value is authoritative and is never silently clobbered by a stray field
+    of the same name. (Use ``arkiv detect`` to surface such collisions.)
     """
     metadata = dict(data["metadata"]) if "metadata" in data else None
 
-    # Collect unknown fields into metadata
+    # Collect unknown fields into metadata; metadata keys take precedence.
     unknown = {k: v for k, v in data.items() if k not in KNOWN_FIELDS}
     if unknown:
-        metadata = {**(metadata or {}), **unknown}
+        metadata = {**unknown, **(metadata or {})}
 
     return Record(
         mimetype=data.get("mimetype"),

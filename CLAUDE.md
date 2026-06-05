@@ -53,7 +53,7 @@ authoritative on divergence (see `docs/PHILOSOPHY.md`).
 
 ### Record Model (`record.py`)
 
-All fields optional: `mimetype`, `uri`, `content`, `timestamp`, `metadata`. Unknown fields on input are merged into `metadata`. Defined in `KNOWN_FIELDS`.
+All fields optional: `mimetype`, `uri`, `content`, `timestamp`, `metadata`. Unknown fields on input are merged into `metadata`, but an explicit `metadata` key wins over a colliding top-level field (the structured value is not clobbered). Defined in `KNOWN_FIELDS`. `normalize_timestamp()` converts zoned timestamps to canonical UTC (see Database).
 
 ### Schema System (`schema.py`)
 

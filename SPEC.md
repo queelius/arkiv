@@ -47,7 +47,7 @@ Each line in a JSONL file is one record. A record is a JSON object with these co
 
 **All fields are optional.** A record with only `metadata` is valid. A record with only `content` is valid. An empty object `{}` is valid.
 
-These five fields are the **known fields**. Any other top-level key is an **unknown field** -- implementations SHOULD merge unknown fields into `metadata` on import, preserving the original data while normalizing the structure.
+These five fields are the **known fields**. Any other top-level key is an **unknown field** -- implementations SHOULD merge unknown fields into `metadata` on import, preserving the original data while normalizing the structure. If an unknown top-level field collides with a key already present inside `metadata`, the explicit `metadata` value wins (the structured value is authoritative and is not clobbered by a stray top-level field of the same name).
 
 ### Content encoding
 
@@ -225,7 +225,7 @@ The `type` field uses standard JSON type names:
 | `object` | `{"key": "value"}` |
 | `null` | `null` |
 
-If a metadata key has mixed types across records, the type of the first occurrence is used.
+If a metadata key has mixed types across records, the type of the first **non-null** occurrence is used (`null` only if every observed value is null). This keeps `type` consistent with the `example` field, which is likewise the first non-null value.
 
 ### Merge-on-import semantics
 
@@ -309,15 +309,15 @@ If the number of unique values exceeds **20** (the enumeration threshold), stop 
 
 When values are tracked: if all values are strings, sort them lexicographically. Otherwise, list them in arbitrary order.
 
-When values are not tracked: record the first observed value as `example`.
+When values are not tracked: record the first non-null observed value as `example`.
 
 ## 2.3 Result
 
 For each metadata key, produce a `SchemaEntry`:
-- `type`: the JSON type of the first observed value
+- `type`: the JSON type of the first non-null observed value (`null` only if all values are null)
 - `count`: number of records containing this key
 - `values`: sorted array of unique values (if cardinality ≤ 20 and all scalar), else absent
-- `example`: first observed value (if `values` is absent), else absent
+- `example`: first non-null observed value (if `values` is absent), else absent
 
 ---
 

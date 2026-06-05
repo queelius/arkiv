@@ -176,6 +176,17 @@ class TestCLI:
         assert "url" in data["unknown_fields"]
         assert any("uri" in w for w in data["warnings"])
 
+    def test_detect_warns_on_metadata_top_level_collision(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"role": "user", "metadata": {"role": "system"}}\n')
+        result = run_arkiv("detect", str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        # The collision is surfaced and the metadata value is the one kept.
+        assert any(
+            "role" in w and "collid" in w.lower() for w in data["warnings"]
+        )
+
     def test_detect_empty_file(self, tmp_path):
         f = tmp_path / "test.jsonl"
         f.write_text("")

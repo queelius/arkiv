@@ -323,3 +323,48 @@ class TestMergeSchema:
     def test_merge_empty(self):
         result = merge_schema({}, {})
         assert result == {}
+
+
+class TestTypeFromFirstOccurrence:
+    """SPEC 2.3: type is the first occurrence, and it must agree with the
+    example field (also first). Previously the code recorded the LAST type,
+    so a string-then-number key reported type=number while example='...'."""
+
+    def test_type_is_first_not_last(self, tmp_path):
+        f = tmp_path / "t.jsonl"
+        f.write_text(
+            '{"metadata": {"x": "str-first"}}\n'
+            '{"metadata": {"x": 999}}\n'
+        )
+        schema = discover_schema(f)
+        assert schema["x"].type == "string"
+
+    def test_type_and_example_agree(self, tmp_path):
+        f = tmp_path / "t.jsonl"
+        f.write_text(
+            '{"metadata": {"x": "hello"}}\n'
+            '{"metadata": {"x": 5}}\n'
+            '{"metadata": {"x": [1, 2]}}\n'
+        )
+        schema = discover_schema(f)
+        # Both describe the first record.
+        assert schema["x"].type == "string"
+        assert schema["x"].example == "hello"
+
+    def test_first_value_null_falls_through_to_real_type(self, tmp_path):
+        # A leading null must not lock the type to 'null' when a real value
+        # follows; report the first NON-null type.
+        f = tmp_path / "t.jsonl"
+        f.write_text(
+            '{"metadata": {"x": null}}\n'
+            '{"metadata": {"x": "real"}}\n'
+        )
+        schema = discover_schema(f)
+        assert schema["x"].type == "string"
+        assert schema["x"].example == "real"
+
+    def test_all_null_is_null(self, tmp_path):
+        f = tmp_path / "t.jsonl"
+        f.write_text('{"metadata": {"x": null}}\n')
+        schema = discover_schema(f)
+        assert schema["x"].type == "null"

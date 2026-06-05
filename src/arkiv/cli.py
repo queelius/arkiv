@@ -426,6 +426,7 @@ def cmd_detect(args):
     fields_used = set()
     unknown_fields = set()
     metadata_keys = set()
+    collisions = set()
     warnings = []
 
     with open(input_path, encoding="utf-8") as f:
@@ -445,13 +446,16 @@ def cmd_detect(args):
                 continue
 
             total += 1
+            md = obj.get("metadata")
+            md_keys = set(md.keys()) if isinstance(md, dict) else set()
             for key in obj:
                 if key in KNOWN_FIELDS:
                     fields_used.add(key)
                 else:
                     unknown_fields.add(key)
-            if isinstance(obj.get("metadata"), dict):
-                metadata_keys.update(obj["metadata"].keys())
+                    if key in md_keys:
+                        collisions.add(key)
+            metadata_keys.update(md_keys)
 
     for field in sorted(unknown_fields):
         suggestion = field_suggestions.get(field)
@@ -463,6 +467,13 @@ def cmd_detect(args):
             warnings.append(
                 f"Unknown field '{field}' (will be merged into metadata on import)"
             )
+
+    for field in sorted(collisions):
+        warnings.append(
+            f"Top-level field '{field}' collides with metadata.{field}; "
+            f"the metadata value is kept on import (the top-level value is "
+            f"dropped)"
+        )
 
     # Schema validation: check sibling schema.yaml if present
     schema_checks = []
