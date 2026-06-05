@@ -354,6 +354,11 @@ CREATE TABLE _metadata (
     value TEXT
 );
 
+CREATE TABLE _assets (
+    path TEXT PRIMARY KEY,   -- archive-relative path, e.g. "media/photo.jpg"
+    content BLOB             -- the file's bytes
+);
+
 CREATE INDEX idx_records_collection ON records(collection);
 CREATE INDEX idx_records_mimetype ON records(mimetype);
 CREATE INDEX idx_records_timestamp ON records(timestamp);
@@ -365,10 +370,13 @@ The `_metadata` table stores README data as key-value pairs:
 
 The `_schema` table stores the merged schema (auto-discovered + curated). The `sample_values` column holds either the enumerated `values` array or a single-element array containing `example`.
 
+The `_assets` table carries the archive's binary assets (the `media/` subtree, referenced by `file://media/...` URIs) as BLOBs keyed by their archive-relative path. This is what makes the database form a complete peer of the directory form: a `db -> dir` export reconstructs `media/` byte-for-byte. Databases produced before this table existed simply have no assets to reconstruct, and export tolerates its absence.
+
 ### Import semantics
 
 - `import_jsonl(path, collection)`: Deletes existing records for the collection (**replace semantics**), then inserts all records from the JSONL file. Pre-computes schema, preserving existing descriptions.
-- `import_readme(path)`: Parses README frontmatter, imports each JSONL from `contents`, merges curated schema from sibling schema.yaml, stores README metadata. Handles nested archives: if a contents entry is a directory, the method recurses into its subdirectory, imports that subdirectory's README without storing its metadata in the top-level `_metadata` table.
+- `import_readme(path)`: Parses README frontmatter, imports each JSONL from `contents`, merges curated schema from sibling schema.yaml, stores README metadata, and slurps the `media/` subtree into `_assets`. Handles nested archives: if a contents entry is a directory, the method recurses into its subdirectory, imports that subdirectory's README without storing its metadata in the top-level `_metadata` table. Two contents entries that resolve to the same collection name (the bare filename stem) raise rather than silently overwriting one another.
+- `import_assets(dir)`: Stores the bytes of every file under `dir/media/` into `_assets` (replace semantics). Called by `import_readme` and by the directory and bundle conversion paths.
 - Unknown top-level fields in records are merged into the `metadata` JSON column.
 
 ### Export semantics
@@ -376,7 +384,8 @@ The `_schema` table stores the merged schema (auto-discovered + curated). The `s
 - Writes one JSONL file per collection
 - Writes README.md from stored `_metadata`
 - Writes schema.yaml from `_schema` table
-- Roundtrip is lossless: a directory converted to a database and back produces equivalent files
+- Reconstructs binary assets: every `_assets` row is written back to `output_dir/<path>` (recreating `media/`). Asset paths are validated to stay within the output directory. Assets are written for temporal slices too, so a sliced export never leaves a referenced resource dangling
+- Roundtrip is lossless: a directory converted to a database and back produces equivalent files, including the `media/` subtree
 - Exported READMEs contain auto-generated schema summary tables wrapped in `<!-- arkiv:schema:begin -->` / `<!-- arkiv:schema:end -->` sentinel comments. On re-export, the region between sentinels is replaced; prose outside sentinels is preserved
 - Optional parameters:
   - `nested`: If true, creates a subdirectory per collection, each with its own README.md and schema.yaml
@@ -387,7 +396,7 @@ The `_schema` table stores the merged schema (auto-discovered + curated). The `s
 
 The `query()` method enforces read-only access:
 1. Prefix check: rejects queries not starting with `SELECT` or `WITH`
-2. SQLite authorizer: allows only `SQLITE_SELECT`, `SQLITE_READ`, and `SQLITE_FUNCTION` operations at the engine level
+2. SQLite authorizer: allows only `SQLITE_SELECT`, `SQLITE_READ`, `SQLITE_FUNCTION`, and `SQLITE_RECURSIVE` operations at the engine level (the last permits read-only `WITH RECURSIVE` CTEs)
 
 Both layers are applied. The authorizer prevents bypass via SQL comments, semicolons, or CTEs containing write operations.
 

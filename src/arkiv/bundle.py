@@ -46,12 +46,30 @@ def is_bundle(path: PathLike) -> bool:
     return _format_of(path) is not None
 
 
+# Derived database forms are regenerable from the directory and must not be
+# shipped inside a bundle (a bundle serializes the directory form, not its
+# cache). Dot-prefixed entries (.git, .DS_Store, ...) are noise.
+_DERIVED_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
+
+
+def _should_pack(rel: Path) -> bool:
+    """Whether an archive-relative path belongs in a transport bundle."""
+    if any(part.startswith(".") for part in rel.parts):
+        return False
+    if rel.suffix.lower() in _DERIVED_SUFFIXES:
+        return False
+    return True
+
+
 def pack_bundle(directory: PathLike, output: PathLike) -> None:
     """Pack an arkiv directory into a compressed bundle.
 
     The bundle format is chosen by the output extension:
-    ``.zip``/``.tar.gz``/``.tgz``. All files in *directory* (recursively)
-    are added, with paths relative to the directory as archive names.
+    ``.zip``/``.tar.gz``/``.tgz``. Files in *directory* (recursively) are
+    added with paths relative to the directory as archive names, EXCEPT
+    derived database files (``.db``/``.sqlite``/``.sqlite3``) and
+    dot-prefixed entries, which are regenerable or noise and do not belong
+    in a transport container.
     """
     directory = Path(directory)
     output = Path(output)
@@ -64,18 +82,21 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
     if not directory.is_dir():
         raise NotADirectoryError(str(directory))
 
+    def _members():
+        for p in sorted(directory.rglob("*")):
+            if p.is_file():
+                rel = p.relative_to(directory)
+                if _should_pack(rel):
+                    yield p, str(rel)
+
     if fmt == "zip":
-        with zipfile.ZipFile(
-            output, "w", compression=zipfile.ZIP_DEFLATED
-        ) as zf:
-            for p in sorted(directory.rglob("*")):
-                if p.is_file():
-                    zf.write(p, arcname=str(p.relative_to(directory)))
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for p, arcname in _members():
+                zf.write(p, arcname=arcname)
     else:  # tar.gz
         with tarfile.open(output, "w:gz") as tf:
-            for p in sorted(directory.rglob("*")):
-                if p.is_file():
-                    tf.add(p, arcname=str(p.relative_to(directory)))
+            for p, arcname in _members():
+                tf.add(p, arcname=arcname)
 
 
 def unpack_bundle(bundle: PathLike, target_dir: PathLike) -> None:

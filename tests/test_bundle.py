@@ -190,3 +190,77 @@ class TestCliImportBundle:
         count = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
         conn.close()
         assert count == 2
+
+
+class TestPackHygiene:
+    """pack_bundle must not sweep derived databases or dotfiles into a
+    transport bundle (the bundle is a serialization of the directory form,
+    not of regenerable or hidden artifacts)."""
+
+    def _make_dir_with_cruft(self, tmp_path):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "README.md").write_text("# arkiv\n")
+        (d / "data.jsonl").write_text('{"content": "hi"}\n')
+        (d / "media").mkdir()
+        (d / "media" / "pic.png").write_bytes(b"\x89PNG\r\n")
+        # Cruft that must NOT be packed:
+        (d / "arkiv.db").write_bytes(b"SQLite format 3\x00")
+        (d / "notes.sqlite3").write_bytes(b"SQLite format 3\x00")
+        (d / ".hidden").write_text("secret")
+        (d / ".git").mkdir()
+        (d / ".git" / "config").write_text("[core]\n")
+        return d
+
+    def test_zip_excludes_derived_db_and_dotfiles(self, tmp_path):
+        src = self._make_dir_with_cruft(tmp_path)
+        bundle = tmp_path / "archive.zip"
+        pack_bundle(src, bundle)
+        with zipfile.ZipFile(bundle) as zf:
+            names = set(zf.namelist())
+        # Canonical archive files (including media) are packed:
+        assert "README.md" in names
+        assert "data.jsonl" in names
+        assert "media/pic.png" in names
+        # Derived databases and dotfiles are not:
+        assert "arkiv.db" not in names
+        assert "notes.sqlite3" not in names
+        assert ".hidden" not in names
+        assert not any(n.startswith(".git") for n in names)
+
+    def test_tar_excludes_derived_db_and_dotfiles(self, tmp_path):
+        src = self._make_dir_with_cruft(tmp_path)
+        bundle = tmp_path / "archive.tar.gz"
+        pack_bundle(src, bundle)
+        with tarfile.open(bundle, "r:gz") as tf:
+            names = {m.name for m in tf.getmembers()}
+        assert "data.jsonl" in names and "media/pic.png" in names
+        assert "arkiv.db" not in names
+        assert ".hidden" not in names
+
+
+class TestCliBundleMediaRoundtrip:
+    def test_media_survives_full_convert_chain_through_bundle(self, tmp_path):
+        payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "data.jsonl").write_text(
+            '{"uri": "file://media/pic.png", "mimetype": "image/png"}\n'
+        )
+        (src / "README.md").write_text(
+            "---\ncontents:\n- path: data.jsonl\n---\n"
+        )
+        (src / "media").mkdir()
+        (src / "media" / "pic.png").write_bytes(payload)
+
+        a_db = tmp_path / "a.db"
+        bundle = tmp_path / "archive.zip"
+        b_db = tmp_path / "b.db"
+        out = tmp_path / "out"
+
+        assert run_arkiv("convert", str(src), str(a_db)).returncode == 0
+        assert run_arkiv("convert", str(a_db), str(bundle)).returncode == 0
+        assert run_arkiv("convert", str(bundle), str(b_db)).returncode == 0
+        assert run_arkiv("convert", str(b_db), str(out)).returncode == 0
+
+        assert (out / "media" / "pic.png").read_bytes() == payload

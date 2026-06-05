@@ -69,17 +69,19 @@ Two-tier schema: auto-discovered from data and curated from `schema.yaml`.
 SQLite tables:
 - `records` -- (id, collection, mimetype, uri, content, timestamp, metadata JSON)
 - `_schema` -- (collection, key_path, type, count, sample_values, description)
-- `_metadata` -- (key TEXT PRIMARY KEY, value TEXT) — stores README frontmatter + body as KV pairs
+- `_metadata` -- (key TEXT PRIMARY KEY, value TEXT): stores README frontmatter + body as KV pairs
+- `_assets` -- (path TEXT PRIMARY KEY, content BLOB): the `media/` subtree stored as BLOBs, so the database form is a complete peer of the directory form (media survives a db roundtrip)
 
 Key behaviors:
 - `import_jsonl()` uses **replace semantics** (deletes existing records for same collection before inserting)
 - `import_jsonl()` preserves existing schema descriptions across reimports via `_load_schema_descriptions()`
-- `import_readme()` parses README.md frontmatter, imports each JSONL from `contents` (resolves paths relative to README, so nested `collection/collection.jsonl` paths work), merges curated schema from sibling `schema.yaml`
+- `import_readme()` parses README.md frontmatter, imports each JSONL from `contents` (resolves paths relative to README, so nested `collection/collection.jsonl` paths work), merges curated schema from sibling `schema.yaml`, and slurps the `media/` subtree into `_assets`. Two contents entries that resolve to the same collection name (the bare filename stem) raise a collision error rather than silently overwriting one another via replace semantics.
+- `import_assets()` stores `dir/media/**` bytes into `_assets` (replace semantics); also called by the directory and bundle conversion paths in `cli.py`
 - `insert_record()` is the append-only write path used by the MCP `write_record` tool. By design, it does NOT update the `_schema` table; the pre-computed schema reflects the state at last `arkiv convert`.
 - `refresh_schema()` recomputes and persists schema for a collection by scanning all records. Use after batches of `insert_record()` writes to bring the pre-computed schema back in sync.
 - `_save_schema_entries()` is the shared helper for writing to `_schema` table (used by both `import_jsonl` and `merge_curated_schema`)
 - `_store_readme_metadata()` / `_load_readme_metadata()` serialize README frontmatter + body to/from `_metadata` KV table
-- `export()` writes JSONL files + README.md + schema.yaml, preserving stored frontmatter metadata. Supports `nested` (per-collection subdirectories with own README + schema.yaml), `since`/`until` (temporal slicing with two-pass schema recomputation from filtered data), and schema-in-README injection via `render.py` sentinels
+- `export()` writes JSONL files + README.md + schema.yaml, preserving stored frontmatter metadata, and reconstructs the `media/` subtree from `_assets` (via `_export_assets()`, with a path-escape guard and backward compatibility for pre-`_assets` databases). Supports `nested` (per-collection subdirectories with own README + schema.yaml), `since`/`until` (temporal slicing with two-pass schema recomputation from filtered data), and schema-in-README injection via `render.py` sentinels
 - `get_readme()` is the public accessor for stored README metadata
 - `query()` is read-only (SELECT/WITH prefix check + sqlite3 authorizer)
 
@@ -121,7 +123,9 @@ Self-contained module for `.zip` and `.tar.gz` archives. Public API:
 `is_bundle(path)`, `pack_bundle(directory, output)`,
 `unpack_bundle(bundle, target_dir)`. The `cmd_convert` flow uses these
 to pack/unpack through a tempdir transparently when the user-supplied
-input or output is a bundle.
+input or output is a bundle. `pack_bundle` excludes derived database
+files (`.db`/`.sqlite`/`.sqlite3`) and dot-prefixed entries: a bundle
+serializes the directory form, not its regenerable cache or hidden noise.
 
 Stdlib-only: zip with DEFLATE, tar with gzip. Modern formats like zstd
 or xz are deliberately excluded so bundles stay openable on any

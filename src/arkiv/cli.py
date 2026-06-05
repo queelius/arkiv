@@ -108,6 +108,7 @@ def cmd_convert(args):
                         db.import_jsonl(j)
                         for j in sorted(Path(tmp).glob("*.jsonl"))
                     )
+                    db.import_assets(Path(tmp))
             finally:
                 db.close()
         print(f"Converted {input_path.name} → {output} ({count} records)")
@@ -130,6 +131,7 @@ def cmd_convert(args):
                         f"Directory has no README.md and no .jsonl files: "
                         f"{input_path}"
                     )
+                db.import_assets(input_path)
         finally:
             db.close()
         print(f"Converted {input_path} → {output} ({count} records)")
@@ -210,6 +212,7 @@ def _resolve_db(path_str, writable=False):
             else:
                 for jsonl in sorted(path.glob("*.jsonl")):
                     db.import_jsonl(jsonl)
+                db.import_assets(path)
             if not writable:
                 db.close()
                 return Database(db_path, read_only=True)

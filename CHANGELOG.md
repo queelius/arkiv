@@ -9,8 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
 
+### Added
+
+- Binary assets are now carried through the database form. A new
+  `_assets` table stores the bytes of the `media/` subtree, so a
+  `directory -> db -> directory` roundtrip (and the round trip through a
+  `.zip`/`.tar.gz` bundle) reconstructs `media/` byte-for-byte. Previously
+  the database stored only the `file://media/...` URI string, so a
+  db-to-directory export silently dropped every binary asset and left the
+  surviving URI dangling, breaking the "isomorphic peers, lossless
+  conversion" promise. Databases produced before this table tolerate its
+  absence on export.
+
 ### Fixed
 
+- `pack_bundle` no longer sweeps derived database files
+  (`.db`/`.sqlite`/`.sqlite3`) or dot-prefixed entries (e.g. `.git`,
+  `.DS_Store`) into a transport bundle. A bundle serializes the directory
+  form, not its regenerable cache or hidden noise.
 - Read-only SQL queries may now use `WITH RECURSIVE`. The authorizer
   denied the recursion step (`SQLITE_RECURSIVE`) even though `query()`
   admits the `WITH` prefix, so recursive CTEs (e.g. walking a parent

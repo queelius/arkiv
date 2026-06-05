@@ -18,6 +18,23 @@ from .schema import (
 
 _UNSAFE_NAMES = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
 
+# Conventional subdirectory for binary assets referenced by file://media/...
+# URIs (SPEC 1.2). Its contents are carried through the database form as
+# BLOBs in the _assets table so the two forms stay isomorphic.
+_MEDIA_DIRNAME = "media"
+
+
+def _is_within(child: Path, root: Path) -> bool:
+    """True if ``child`` is ``root`` or lives under it (both resolved).
+
+    Python 3.8 lacks ``Path.is_relative_to``; this is the portable form.
+    """
+    try:
+        child.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
 
 def _collection_name_from_path(path: str) -> str:
     """Extract collection name from a contents entry path.
@@ -84,6 +101,11 @@ class Database:
             CREATE TABLE IF NOT EXISTS _metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS _assets (
+                path TEXT PRIMARY KEY,
+                content BLOB
             );
 
             CREATE INDEX IF NOT EXISTS idx_records_collection ON records(collection);
@@ -561,12 +583,69 @@ class Database:
         # Write schema.yaml
         save_schema_yaml(schemas, output_dir / "schema.yaml")
 
+        # Reconstruct binary assets (media/) from the _assets table. Assets
+        # are not timestamped, so a temporal slice still writes all of them
+        # rather than risk leaving a referenced resource dangling.
+        self._export_assets(output_dir)
+
+    def _export_assets(self, output_dir: Path) -> None:
+        """Write every row of _assets back to ``output_dir/<path>``.
+
+        Each path is validated to stay within ``output_dir`` (defending
+        against a crafted database with an escaping asset path). Databases
+        created before the _assets table existed simply have nothing to
+        write.
+        """
+        try:
+            rows = self.conn.execute("SELECT path, content FROM _assets").fetchall()
+        except sqlite3.OperationalError:
+            return  # pre-_assets database: no assets to reconstruct
+
+        out_root = output_dir.resolve()
+        for row in rows:
+            rel, content = row[0], row[1]
+            dest = output_dir / rel
+            if not _is_within(dest, out_root):
+                raise ValueError(
+                    f"unsafe asset path (escapes the output directory): {rel!r}"
+                )
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content if content is not None else b"")
+
+    def import_assets(self, source_dir: Union[str, Path]) -> int:
+        """Slurp an archive's ``media/`` subtree into the ``_assets`` table.
+
+        Binary assets referenced by ``file://media/...`` URIs are stored as
+        BLOBs keyed by their archive-relative POSIX path, so the database
+        form is a complete peer of the directory form and a db -> dir export
+        can reconstruct them byte-for-byte. Replace semantics: existing rows
+        are cleared first, keeping re-import idempotent. Returns the number
+        of asset files stored.
+        """
+        source_dir = Path(source_dir)
+        media_dir = source_dir / _MEDIA_DIRNAME
+        self.conn.execute("DELETE FROM _assets")
+        count = 0
+        if media_dir.is_dir():
+            for p in sorted(media_dir.rglob("*")):
+                if p.is_file():
+                    rel = p.relative_to(source_dir).as_posix()
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO _assets (path, content) "
+                        "VALUES (?, ?)",
+                        (rel, p.read_bytes()),
+                    )
+                    count += 1
+        self.conn.commit()
+        return count
+
     def import_readme(self, readme_path: Union[str, Path]) -> int:
         """Import all collections described in a README.md.
 
         1. Parse README.md frontmatter → store in _metadata
         2. For each contents entry, import the JSONL file
         3. If sibling schema.yaml exists, merge curated schema
+        4. Slurp the media/ subtree into _assets
 
         Returns total records imported.
         """
@@ -605,6 +684,9 @@ class Database:
             curated = load_schema_yaml(schema_yaml_path)
             for coll_name, coll_schema in curated.items():
                 self.merge_curated_schema(coll_name, coll_schema.metadata_keys)
+
+        # Carry binary assets (media/) into the database form.
+        self.import_assets(base_dir)
 
         return total
 
