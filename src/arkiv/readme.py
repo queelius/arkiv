@@ -8,10 +8,11 @@ from typing import Any, Dict, Tuple, Union
 
 @dataclass
 class Readme:
-    """ECHO-compliant README with YAML frontmatter + markdown body.
+    """An arkiv archive README: YAML frontmatter + markdown body.
 
-    Frontmatter is a plain dict — all keys are preserved on roundtrip.
-    Known keys by convention: name, description, datetime, generator, contents.
+    Frontmatter is a plain dict; all keys are preserved on roundtrip. Known
+    keys by convention: name, description, datetime, generator, arkiv_format,
+    contents.
     """
 
     frontmatter: Dict[str, Any] = field(default_factory=dict)

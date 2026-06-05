@@ -643,7 +643,11 @@ def main():
 
     # query
     p_query = subparsers.add_parser("query", help="Run SQL query")
-    p_query.add_argument("db", help="SQLite database path")
+    p_query.add_argument(
+        "db",
+        help="Database, archive directory, or .jsonl file "
+        "(directories/JSONL auto-create arkiv.db on demand)",
+    )
     p_query.add_argument("sql", help="SQL query")
     p_query.set_defaults(func=cmd_query)
 
@@ -683,7 +687,11 @@ def main():
 
     # mcp
     p_mcp = subparsers.add_parser("mcp", help="Start MCP server")
-    p_mcp.add_argument("db", help="SQLite database path")
+    p_mcp.add_argument(
+        "db",
+        help="Database, archive directory, or .jsonl file "
+        "(directories/JSONL auto-create arkiv.db on demand)",
+    )
     p_mcp.add_argument("--writable", action="store_true",
                         help="Enable write_record tool (default: read-only)")
     p_mcp.set_defaults(func=cmd_mcp)

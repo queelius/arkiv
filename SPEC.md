@@ -413,7 +413,7 @@ Returns the archive overview: name, description (from README), collection list w
 **Parameters:** None
 
 **Returns:** JSON object with `name`, `description` (if present), and `collections` array. Each entry in the `collections` array is an object with:
-- `file` (string): collection filename or path (e.g., "conversations.jsonl" or "conversations/")
+- `file` (string): collection filename, always the flat `"<collection>.jsonl"` form (the database does not record whether a collection came from a nested layout, so the manifest does not reconstruct the `"<collection>/"` directory form)
 - `record_count` (integer): number of records in the collection
 - `description` (string, optional): human-readable description from README frontmatter
 - `schema` (object, optional): object with `metadata_keys` mapping

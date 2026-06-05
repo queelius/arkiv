@@ -464,8 +464,13 @@ class Database:
                 "SELECT key_path, type, count, sample_values, description FROM _schema WHERE collection = ?",
                 (collection,),
             ).fetchall()
+            record_count = self.conn.execute(
+                "SELECT COUNT(*) FROM records WHERE collection = ?",
+                (collection,),
+            ).fetchone()[0]
             result = {
                 "collection": collection,
+                "record_count": record_count,
                 "metadata_keys": {},
             }
             for row in rows:
@@ -742,6 +747,15 @@ class Database:
 
         readme.frontmatter["contents"] = updated_contents
         readme.frontmatter["arkiv_format"] = "0.2"
+        # Stamp the tool/version and the most-recent-export time (SPEC 1.3),
+        # so a fresh export is self-describing even when the database carried
+        # no stored README frontmatter.
+        from datetime import datetime, timezone
+
+        readme.frontmatter["generator"] = f"arkiv v{__version__}"
+        readme.frontmatter["datetime"] = datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
 
         summary = render_schema_summary(schemas, heading="## Collections")
         readme.body = inject_schema_block(readme.body, summary)

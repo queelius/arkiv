@@ -7,6 +7,23 @@ from arkiv.readme import parse_readme
 from arkiv.schema import load_schema_yaml
 
 
+class TestExportReadmeStamps:
+    def test_export_readme_has_generator_and_datetime(self, tmp_path):
+        f = tmp_path / "input.jsonl"
+        f.write_text('{"content": "hi"}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="data")
+        out = tmp_path / "out"
+        db.export(out)
+        db.close()
+        fm = parse_readme(out / "README.md").frontmatter
+        assert fm.get("generator", "").startswith("arkiv v")
+        # datetime is stamped as the most-recent-export time (ISO 8601 UTC).
+        assert isinstance(fm.get("datetime"), str)
+        assert fm["datetime"].startswith("20")
+        assert fm["datetime"].endswith("Z")
+
+
 class TestExport:
     def test_export_creates_jsonl_files(self, tmp_path):
         # Create and populate DB

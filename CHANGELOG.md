@@ -56,6 +56,17 @@ Fixes from the 2026-06-04 multi-agent review (`docs/reviews/`).
 
 ### Fixed
 
+- `get_schema()` (and the MCP `get_schema` tool) now include `record_count`
+  per collection, matching the documented return shape in SPEC 3.2;
+  previously the field was specified but never populated.
+- `export()` now stamps `generator` (`arkiv v<version>`) and `datetime`
+  (the export time, ISO 8601 UTC) on the archive README, so a fresh export
+  is self-describing even when the database carried no stored frontmatter.
+- Doc/help fixes: the `Readme` docstring no longer says "ECHO-compliant"
+  (and lists `arkiv_format` among known keys); the `query`/`mcp` argument
+  help notes that a directory or `.jsonl` file is accepted (auto-creating
+  `arkiv.db`); SPEC `get_manifest` no longer claims a `"<collection>/"`
+  `file` form the manifest cannot emit.
 - Schema discovery now records a metadata key's `type` from its first
   non-null occurrence (consistent with the `example` field), matching
   SPEC 2.3. Previously the LAST type won, so a string-then-number key

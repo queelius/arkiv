@@ -252,6 +252,33 @@ class TestQueryGuard:
         db.close()
 
 
+class TestGetSchemaRecordCount:
+    """SPEC 3.2: get_schema returns record_count alongside metadata_keys."""
+
+    def test_single_collection_has_record_count(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text(
+            '{"metadata": {"role": "user"}}\n'
+            '{"metadata": {"role": "assistant"}}\n'
+            '{"metadata": {"role": "user"}}\n'
+        )
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="conv")
+        schema = db.get_schema("conv")
+        db.close()
+        assert schema["record_count"] == 3
+        assert "metadata_keys" in schema
+
+    def test_all_collections_have_record_count(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"metadata": {"x": 1}}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="conv")
+        alls = db.get_schema()
+        db.close()
+        assert alls["conv"]["record_count"] == 1
+
+
 class TestSchemaDescription:
     def test_schema_has_description_column(self, tmp_path):
         f = tmp_path / "test.jsonl"
