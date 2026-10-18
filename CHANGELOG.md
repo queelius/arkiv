@@ -26,6 +26,14 @@ plumbing (six near-identical copies, with divergent bugs).
   member raises `FileNotFoundError` uniformly (tar link members are
   refused the same way); blank, malformed, and non-object lines are
   skipped; `peek_jsonl` returns `None` for absent or unreadable input.
+- Streaming reads treat bundles as untrusted: `open_member` / `iter_jsonl`
+  cap the decompressed bytes read (`max_bytes`, default 8 GiB, refusing
+  zip/tar members whose declared size is over it upfront and bounding
+  gzip streams as they decompress) and the length of one JSONL line
+  (`max_line_chars`, default 64 Mi characters), raising `ValueError`
+  instead of buffering. `peek_jsonl` reads within a 64 MiB budget. A
+  directory-bundle member that is a symlink, or resolves outside the
+  archive, is refused, and `write_bundle` will not write through one.
 - `bundle_format(path)`: classify a path as `dir`, `zip`, `tar.gz`,
   `jsonl`, or `jsonl.gz`.
 - All of the above, plus `pack_bundle`, `unpack_bundle`, and `is_bundle`,

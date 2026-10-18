@@ -46,6 +46,38 @@ def _format_of(path: PathLike) -> Optional[str]:
     return None
 
 
+# Bundles may come from untrusted sources (a published SPA's arkiv export,
+# a shared .zip), so every read is bounded: a cap on the decompressed size
+# of what is read, and on the length of one JSONL line, which is otherwise
+# read into memory whole.
+_MAX_MEMBER_BYTES = 8 * 1024**3  # 8 GiB decompressed, as for unpack_bundle
+_MAX_LINE_CHARS = 64 * 1024**2  # one record
+
+
+class _BoundedReader(io.RawIOBase):
+    """A binary stream that raises once more than *limit* bytes are read:
+    a guard against decompression bombs in sources with no trustworthy
+    declared size (gzip streams above all)."""
+
+    def __init__(self, raw: IO[bytes], limit: int) -> None:
+        self._raw = raw
+        self._left = limit
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        n = self._raw.readinto(b)  # type: ignore[attr-defined]
+        self._left -= n
+        if self._left < 0:
+            raise ValueError("bundle member exceeds the decompressed size limit")
+        return n
+
+
+def _text(raw: IO[bytes], limit: int) -> IO[str]:
+    return io.TextIOWrapper(io.BufferedReader(_BoundedReader(raw, limit)), encoding="utf-8")
+
+
 def bundle_format(path: PathLike) -> str:
     """Classify *path* as an arkiv container: ``"zip"``, ``"tar.gz"``,
     ``"jsonl.gz"``, ``"jsonl"``, or ``"dir"``.
@@ -158,6 +190,10 @@ def write_bundle(path: PathLike, members: Mapping[str, bytes]) -> None:
     if fmt == "dir":
         for name, data in named:
             dest = path / name
+            # Never write through a symlink: an existing link at the member
+            # path, or a linked parent directory, could point outside *path*.
+            if dest.is_symlink() or not _within(dest, path):
+                raise ValueError(f"write_bundle: {name!r} would be written outside {path!s}")
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
         return
@@ -184,57 +220,84 @@ def records_to_jsonl(records: Iterable[Mapping[str, Any]]) -> bytes:
 
 
 @contextmanager
-def open_member(path: PathLike, member: str) -> Iterator[IO[str]]:
+def open_member(
+    path: PathLike, member: str, *, max_bytes: int = _MAX_MEMBER_BYTES
+) -> Iterator[IO[str]]:
     """Open one member of the arkiv archive at *path* for reading as text.
 
     Works on every :func:`bundle_format`: a directory, a zip, or a tar.gz
     is read in place (streamed, never extracted). A bare ``.jsonl`` or
     ``.jsonl.gz`` *is* its one member, so *member* is ignored for it.
 
-    Raises :class:`FileNotFoundError` when the member is absent, including
-    a tar member that is a link rather than a regular file.
+    Raises :class:`FileNotFoundError` when the member is absent or is not a
+    regular file inside the archive (a tar link, or a directory-bundle
+    symlink, which could point anywhere), and :class:`ValueError` once more
+    than *max_bytes* decompressed bytes are read (bomb protection; zip and
+    tar members whose declared size is over the limit are refused upfront).
     """
     fmt = bundle_format(path)
-    if fmt == "jsonl":
-        with open(path, encoding="utf-8") as f:
+    if fmt == "jsonl.gz":
+        with open(path, "rb") as raw, gzip.GzipFile(fileobj=raw) as gz:
+            with _text(gz, max_bytes) as f:
+                yield f
+        return
+    if fmt in ("jsonl", "dir"):
+        target = Path(path)
+        if fmt == "dir":
+            target = target / _check_member_name(member)
+            if target.is_symlink() or not _within(target, Path(path)):
+                raise FileNotFoundError(f"{member!r} is not a regular file in {path!s}")
+        with open(target, "rb") as raw, _text(raw, max_bytes) as f:
             yield f
-    elif fmt == "jsonl.gz":
-        with gzip.open(path, "rt", encoding="utf-8") as f:
-            yield f
-    elif fmt == "dir":
-        name = _check_member_name(member)
-        with open(Path(path) / name, encoding="utf-8") as f:
-            yield f
-    elif fmt == "zip":
+        return
+    if fmt == "zip":
         with zipfile.ZipFile(path) as zf:
             try:
-                raw = zf.open(_check_member_name(member))
+                info = zf.getinfo(_check_member_name(member))
             except KeyError:
                 raise FileNotFoundError(f"{member!r} not in {path!s}") from None
-            with io.TextIOWrapper(raw, encoding="utf-8") as f:
+            if info.file_size > max_bytes:
+                raise ValueError(f"{member!r} in {path!s} exceeds the size limit")
+            with zf.open(info) as raw, _text(raw, max_bytes) as f:
                 yield f
-    else:
-        with tarfile.open(path, "r:gz") as tf:
-            try:
-                info = tf.getmember(_check_member_name(member))
-            except KeyError:
-                raise FileNotFoundError(f"{member!r} not in {path!s}") from None
-            raw = tf.extractfile(info) if info.isfile() else None
-            if raw is None:
-                raise FileNotFoundError(f"{member!r} in {path!s} is not a regular file")
-            with io.TextIOWrapper(raw, encoding="utf-8") as f:
-                yield f
+        return
+    with tarfile.open(path, "r:gz") as tf:
+        try:
+            tinfo = tf.getmember(_check_member_name(member))
+        except KeyError:
+            raise FileNotFoundError(f"{member!r} not in {path!s}") from None
+        raw_tar = tf.extractfile(tinfo) if tinfo.isfile() else None
+        if raw_tar is None:
+            raise FileNotFoundError(f"{member!r} in {path!s} is not a regular file")
+        if tinfo.size > max_bytes:
+            raise ValueError(f"{member!r} in {path!s} exceeds the size limit")
+        with raw_tar, _text(raw_tar, max_bytes) as f:
+            yield f
 
 
-def iter_jsonl(path: PathLike, member: str = "records.jsonl") -> Iterator[Dict[str, Any]]:
+def iter_jsonl(
+    path: PathLike,
+    member: str = "records.jsonl",
+    *,
+    max_bytes: int = _MAX_MEMBER_BYTES,
+    max_line_chars: int = _MAX_LINE_CHARS,
+) -> Iterator[Dict[str, Any]]:
     """Yield the JSON objects in one JSONL member of an arkiv archive.
 
     Blank lines, lines that are not valid JSON, and JSON values that are
     not objects are skipped: a record is an object. Missing members raise
-    :class:`FileNotFoundError` (see :func:`open_member`).
+    :class:`FileNotFoundError`, and oversized input (more than *max_bytes*
+    in all, or one line longer than *max_line_chars*) raises
+    :class:`ValueError` rather than being read into memory (see
+    :func:`open_member`).
     """
-    with open_member(path, member) as f:
-        for line in f:
+    with open_member(path, member, max_bytes=max_bytes) as f:
+        while True:
+            line = f.readline(max_line_chars + 1)
+            if not line:
+                return
+            if len(line) > max_line_chars:
+                raise ValueError(f"a line in {member!r} exceeds {max_line_chars} characters")
             line = line.strip()
             if not line:
                 continue
@@ -246,12 +309,20 @@ def iter_jsonl(path: PathLike, member: str = "records.jsonl") -> Iterator[Dict[s
                 yield value
 
 
+# Detection reads one record, so it gets a far smaller budget.
+_PEEK_MAX_BYTES = 64 * 1024**2
+
+
 def peek_jsonl(path: PathLike, member: str = "records.jsonl") -> Optional[Dict[str, Any]]:
     """The first record of a JSONL member, or None if there is none or the
-    archive cannot be read at all (missing, corrupt, not UTF-8). Meant for
-    format detection, where unreadable input is simply "not ours"."""
+    archive cannot be read at all (missing, corrupt, not UTF-8, or the first
+    record lies beyond a small read budget). Meant for format detection,
+    where unreadable input is simply "not ours"."""
     try:
-        return next(iter_jsonl(path, member), None)
+        records = iter_jsonl(
+            path, member, max_bytes=_PEEK_MAX_BYTES, max_line_chars=_PEEK_MAX_BYTES
+        )
+        return next(records, None)
     except (OSError, ValueError, EOFError, zipfile.BadZipFile, tarfile.TarError):
         return None
 

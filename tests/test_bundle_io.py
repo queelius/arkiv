@@ -161,3 +161,71 @@ def test_pack_bundle_is_byte_reproducible(tmp_path, ext):
     pack_bundle(src, b)
     assert a.read_bytes() == b.read_bytes()
     assert list(iter_jsonl(b)) == RECORDS
+
+
+class TestUntrustedInput:
+    """Bundles can come from anywhere: reads are bounded and never follow
+    links out of the archive."""
+
+    def test_gzip_stream_over_limit_raises(self, tmp_path):
+        out = tmp_path / "bomb.jsonl.gz"
+        out.write_bytes(gzip.compress(b'{"a": 1}\n' * 200_000))  # ~1.8 MB from ~2 KB
+        with pytest.raises(ValueError):
+            list(iter_jsonl(out, max_bytes=100_000))
+
+    @pytest.mark.parametrize("name", ["o.zip", "o.tar.gz"])
+    def test_declared_size_over_limit_refused_upfront(self, tmp_path, name):
+        out = tmp_path / name
+        write_bundle(out, {"records.jsonl": b'{"a": 1}\n' * 1000})
+        with pytest.raises(ValueError):
+            list(iter_jsonl(out, max_bytes=100))
+
+    def test_overlong_line_raises_not_buffers(self, tmp_path):
+        out = tmp_path / "r.jsonl"
+        out.write_text('{"a": "' + "x" * 5000 + '"}\n', encoding="utf-8")
+        with pytest.raises(ValueError):
+            list(iter_jsonl(out, max_line_chars=1000))
+        assert list(iter_jsonl(out)) == [{"a": "x" * 5000}]
+
+    def test_peek_of_bomb_is_none(self, tmp_path, monkeypatch):
+        import arkiv.bundle as bundle
+
+        monkeypatch.setattr(bundle, "_PEEK_MAX_BYTES", 1000)
+        out = tmp_path / "bomb.jsonl.gz"
+        out.write_bytes(gzip.compress(b" " * 100_000 + b'{"a": 1}\n'))
+        assert peek_jsonl(out) is None
+
+    def test_dir_member_symlink_out_of_archive_refused(self, tmp_path):
+        secret = tmp_path / "secret.jsonl"
+        secret.write_text('{"secret": true}\n', encoding="utf-8")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "records.jsonl").symlink_to(secret)
+        with pytest.raises(FileNotFoundError):
+            list(iter_jsonl(archive))
+
+    def test_write_bundle_will_not_write_through_symlink(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "media").symlink_to(outside)
+        with pytest.raises(ValueError):
+            write_bundle(archive, {"media/x.bin": b"x"})
+        assert not (outside / "x.bin").exists()
+        (archive / "records.jsonl").symlink_to(outside / "target")
+        with pytest.raises(ValueError):
+            write_bundle(archive, {"records.jsonl": b"{}"})
+        assert not (outside / "target").exists()
+
+
+@pytest.mark.parametrize("name", WRITABLE)
+def test_str_paths_work_everywhere(tmp_path, name):
+    """Callers pass plain strings as often as Paths."""
+    out = str(tmp_path / name)
+    write_bundle(out, MEMBERS)
+    assert bundle_format(out) in ("dir", "zip", "tar.gz")
+    assert list(iter_jsonl(out)) == RECORDS
+    assert peek_jsonl(out) == RECORDS[0]
+    with open_member(out, "README.md") as f:
+        assert f.read().startswith("---")
