@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-18
+
+A bundle I/O layer for tools that write and read arkiv archives, so the
+`*-memex` archives can stop carrying their own copies of the zip/tar
+plumbing (six near-identical copies, with divergent bugs).
+
+### Added
+
+- `write_bundle(path, members)`: write named in-memory members as a
+  directory, `.zip`, or `.tar.gz` (by extension), creating parent
+  directories. Byte-reproducible: sorted members, fixed timestamps and
+  modes, no owner identity, and no output file name in the gzip header.
+  Member names that are absolute or climb out of the archive are rejected.
+- `records_to_jsonl(records)`: UTF-8 JSONL bytes (`ensure_ascii=False`,
+  non-JSON values via `str`).
+- `open_member(path, member)`, `iter_jsonl(path, member)`,
+  `peek_jsonl(path, member)`: stream one member out of a directory, zip,
+  tar.gz, or bare `.jsonl` / `.jsonl.gz` without extracting. A missing
+  member raises `FileNotFoundError` uniformly (tar link members are
+  refused the same way); blank, malformed, and non-object lines are
+  skipped; `peek_jsonl` returns `None` for absent or unreadable input.
+- `bundle_format(path)`: classify a path as `dir`, `zip`, `tar.gz`,
+  `jsonl`, or `jsonl.gz`.
+- All of the above, plus `pack_bundle`, `unpack_bundle`, and `is_bundle`,
+  are exported from the package root.
+
+### Changed
+
+- `pack_bundle` output is now byte-reproducible as well (it previously
+  stamped on-disk mtimes, the packer's uid/gid, and the wall clock into
+  the gzip header).
+
 ## [0.3.0] - 2026-06-05
 
 Hardening and feature release driven by a multi-agent review

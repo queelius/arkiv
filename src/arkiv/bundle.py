@@ -22,10 +22,15 @@ Typical flow::
 """
 from __future__ import annotations
 
+import gzip
+import io
+import json
+import shutil
 import tarfile
 import zipfile
-from pathlib import Path
-from typing import Optional, Union
+from contextlib import contextmanager
+from pathlib import Path, PurePosixPath
+from typing import IO, Any, Dict, Iterable, Iterator, Mapping, Optional, Union
 
 
 PathLike = Union[str, Path]
@@ -39,6 +44,29 @@ def _format_of(path: PathLike) -> Optional[str]:
     if s.endswith(".tar.gz") or s.endswith(".tgz"):
         return "tar.gz"
     return None
+
+
+def bundle_format(path: PathLike) -> str:
+    """Classify *path* as an arkiv container: ``"zip"``, ``"tar.gz"``,
+    ``"jsonl.gz"``, ``"jsonl"``, or ``"dir"``.
+
+    Decided by extension, except that an existing directory is always
+    ``"dir"``. Any other path is ``"dir"`` too: the canonical, unpacked
+    form, and the one a writer creates for an extension-less output path.
+    ``"jsonl"``/``"jsonl.gz"`` are a bare record stream (one collection,
+    no README or schema), readable but not a :func:`write_bundle` target.
+    """
+    if Path(path).is_dir():
+        return "dir"
+    fmt = _format_of(path)
+    if fmt is not None:
+        return fmt
+    s = str(path).lower()
+    if s.endswith(".jsonl.gz"):
+        return "jsonl.gz"
+    if s.endswith(".jsonl"):
+        return "jsonl"
+    return "dir"
 
 
 def is_bundle(path: PathLike) -> bool:
@@ -70,6 +98,164 @@ def _should_pack(rel: Path) -> bool:
     return True
 
 
+# Fixed member metadata, so packing identical content yields identical
+# bytes: zip's earliest representable date (it cannot store 1970), tar's
+# epoch, and no owner identity (which would also leak the packer's uid).
+_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+_FILE_MODE = 0o644
+
+
+def _zip_info(name: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, date_time=_ZIP_DATE_TIME)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = _FILE_MODE << 16
+    return info
+
+
+def _tar_info(name: str, size: int) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.size = size
+    info.mtime = 0
+    info.mode = _FILE_MODE
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    return info
+
+
+@contextmanager
+def _open_tar_gz_for_write(output: Path) -> Iterator[tarfile.TarFile]:
+    """A tar.gz writer whose gzip header is fixed too: ``tarfile.open(
+    "w:gz")`` would stamp the wall-clock time and the output file name
+    into it."""
+    with open(output, "wb") as raw:
+        with gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz:
+            with tarfile.open(fileobj=gz, mode="w") as tf:
+                yield tf
+
+
+def _check_member_name(name: str) -> str:
+    """Reject member names that are absolute or climb out of the archive."""
+    p = PurePosixPath(name)
+    if not name or p.is_absolute() or ".." in p.parts or "\\" in name:
+        raise ValueError(f"invalid bundle member name: {name!r}")
+    return p.as_posix()
+
+
+def write_bundle(path: PathLike, members: Mapping[str, bytes]) -> None:
+    """Write *members* (archive-relative POSIX name -> content) as an arkiv
+    archive at *path*: a directory, or a ``.zip`` / ``.tar.gz`` / ``.tgz``
+    bundle chosen by extension (see :func:`bundle_format`).
+
+    Bundles are byte-reproducible: members are written in sorted order with
+    fixed timestamps, modes, and ownership, so exporting identical records
+    twice yields identical files. Parent directories of *path* are created.
+    """
+    path = Path(path)
+    fmt = bundle_format(path)
+    if fmt not in ("dir", "zip", "tar.gz"):
+        raise ValueError(f"write_bundle: cannot write a bundle as {fmt!r}: {path!s}")
+    named = sorted((_check_member_name(n), data) for n, data in members.items())
+    if fmt == "dir":
+        for name, data in named:
+            dest = path / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "zip":
+        with zipfile.ZipFile(path, "w") as zf:
+            for name, data in named:
+                zf.writestr(_zip_info(name), data)
+    else:
+        with _open_tar_gz_for_write(path) as tf:
+            for name, data in named:
+                tf.addfile(_tar_info(name, len(data)), io.BytesIO(data))
+
+
+def records_to_jsonl(records: Iterable[Mapping[str, Any]]) -> bytes:
+    """Serialize records as UTF-8 JSONL, one object per line.
+
+    Non-ASCII text is kept as is, and values JSON cannot represent
+    (datetimes, Decimals, ...) are written via ``str``.
+    """
+    return "".join(
+        json.dumps(rec, ensure_ascii=False, default=str) + "\n" for rec in records
+    ).encode("utf-8")
+
+
+@contextmanager
+def open_member(path: PathLike, member: str) -> Iterator[IO[str]]:
+    """Open one member of the arkiv archive at *path* for reading as text.
+
+    Works on every :func:`bundle_format`: a directory, a zip, or a tar.gz
+    is read in place (streamed, never extracted). A bare ``.jsonl`` or
+    ``.jsonl.gz`` *is* its one member, so *member* is ignored for it.
+
+    Raises :class:`FileNotFoundError` when the member is absent, including
+    a tar member that is a link rather than a regular file.
+    """
+    fmt = bundle_format(path)
+    if fmt == "jsonl":
+        with open(path, encoding="utf-8") as f:
+            yield f
+    elif fmt == "jsonl.gz":
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            yield f
+    elif fmt == "dir":
+        name = _check_member_name(member)
+        with open(Path(path) / name, encoding="utf-8") as f:
+            yield f
+    elif fmt == "zip":
+        with zipfile.ZipFile(path) as zf:
+            try:
+                raw = zf.open(_check_member_name(member))
+            except KeyError:
+                raise FileNotFoundError(f"{member!r} not in {path!s}") from None
+            with io.TextIOWrapper(raw, encoding="utf-8") as f:
+                yield f
+    else:
+        with tarfile.open(path, "r:gz") as tf:
+            try:
+                info = tf.getmember(_check_member_name(member))
+            except KeyError:
+                raise FileNotFoundError(f"{member!r} not in {path!s}") from None
+            raw = tf.extractfile(info) if info.isfile() else None
+            if raw is None:
+                raise FileNotFoundError(f"{member!r} in {path!s} is not a regular file")
+            with io.TextIOWrapper(raw, encoding="utf-8") as f:
+                yield f
+
+
+def iter_jsonl(path: PathLike, member: str = "records.jsonl") -> Iterator[Dict[str, Any]]:
+    """Yield the JSON objects in one JSONL member of an arkiv archive.
+
+    Blank lines, lines that are not valid JSON, and JSON values that are
+    not objects are skipped: a record is an object. Missing members raise
+    :class:`FileNotFoundError` (see :func:`open_member`).
+    """
+    with open_member(path, member) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                yield value
+
+
+def peek_jsonl(path: PathLike, member: str = "records.jsonl") -> Optional[Dict[str, Any]]:
+    """The first record of a JSONL member, or None if there is none or the
+    archive cannot be read at all (missing, corrupt, not UTF-8). Meant for
+    format detection, where unreadable input is simply "not ours"."""
+    try:
+        return next(iter_jsonl(path, member), None)
+    except (OSError, ValueError, EOFError, zipfile.BadZipFile, tarfile.TarError):
+        return None
+
+
 def pack_bundle(directory: PathLike, output: PathLike) -> None:
     """Pack an arkiv directory into a compressed bundle.
 
@@ -79,6 +265,9 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
     derived database files (``.db``/``.sqlite``/``.sqlite3``) and
     dot-prefixed entries, which are regenerable or noise and do not belong
     in a transport container.
+
+    Like :func:`write_bundle`, the result is byte-reproducible: members go
+    in sorted order with fixed timestamps, modes, and ownership.
     """
     directory = Path(directory)
     output = Path(output)
@@ -105,13 +294,15 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
                     yield p, str(rel)
 
     if fmt == "zip":
-        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(output, "w") as zf:
             for p, arcname in _members():
-                zf.write(p, arcname=arcname)
+                with open(p, "rb") as src, zf.open(_zip_info(arcname), "w") as dst:
+                    shutil.copyfileobj(src, dst)
     else:  # tar.gz
-        with tarfile.open(output, "w:gz") as tf:
+        with _open_tar_gz_for_write(output) as tf:
             for p, arcname in _members():
-                tf.add(p, arcname=arcname)
+                with open(p, "rb") as src:
+                    tf.addfile(_tar_info(arcname, p.stat().st_size), src)
 
 
 # Bundles may come from untrusted sources, so extraction is bounded to

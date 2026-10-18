@@ -43,6 +43,35 @@ arkiv convert archive.db 2024/ --since 2024-01-01         # temporal slice
 arkiv convert archive.db archive.zip                      # pack for transport
 ```
 
+## Library: reading and writing bundles
+
+Tools that produce or consume arkiv archives (the `*-memex` exporters and
+importers, for example) can use the bundle layer directly instead of
+reimplementing zip/tar handling:
+
+```python
+from arkiv import write_bundle, records_to_jsonl, iter_jsonl, peek_jsonl
+
+# Directory, .zip, or .tar.gz, chosen by extension. Byte-reproducible:
+# identical records always produce identical bundle bytes.
+write_bundle("export.zip", {
+    "records.jsonl": records_to_jsonl(records),
+    "schema.yaml": schema_bytes,
+    "README.md": readme_bytes,
+})
+
+# Stream records from a directory, .zip, .tar.gz, or bare .jsonl / .jsonl.gz
+# (members are read in place, never extracted). Non-object lines are skipped.
+for record in iter_jsonl("export.zip", member="records.jsonl"):
+    ...
+
+first = peek_jsonl(path)  # None if absent or unreadable: for format detection
+```
+
+`pack_bundle` / `unpack_bundle` convert a whole directory tree (including
+`media/`) to and from a bundle; unpacking rejects path escapes and
+decompression bombs.
+
 ## MCP Tools
 
 Read-only by default. Start with `arkiv mcp --writable db` to enable the write tool.

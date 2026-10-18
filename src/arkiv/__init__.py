@@ -1,6 +1,6 @@
 """arkiv: Universal personal data format."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .record import Record, normalize_timestamp, parse_record, parse_jsonl
 from .schema import (
@@ -11,6 +11,17 @@ from .schema import (
     save_schema_yaml,
 )
 from .readme import Readme, parse_readme, save_readme
+from .bundle import (
+    bundle_format,
+    is_bundle,
+    iter_jsonl,
+    open_member,
+    pack_bundle,
+    peek_jsonl,
+    records_to_jsonl,
+    unpack_bundle,
+    write_bundle,
+)
 from .database import Database
 
 __all__ = [
@@ -27,4 +38,13 @@ __all__ = [
     "parse_readme",
     "save_readme",
     "Database",
+    "bundle_format",
+    "is_bundle",
+    "iter_jsonl",
+    "open_member",
+    "pack_bundle",
+    "peek_jsonl",
+    "records_to_jsonl",
+    "unpack_bundle",
+    "write_bundle",
 ]
