@@ -261,18 +261,29 @@ def open_member(
             with zf.open(info) as raw, _text(raw, max_bytes) as f:
                 yield f
         return
-    with tarfile.open(path, "r:gz") as tf:
-        try:
-            tinfo = tf.getmember(_check_member_name(member))
-        except KeyError:
-            raise FileNotFoundError(f"{member!r} not in {path!s}") from None
-        raw_tar = tf.extractfile(tinfo) if tinfo.isfile() else None
-        if raw_tar is None:
-            raise FileNotFoundError(f"{member!r} in {path!s} is not a regular file")
-        if tinfo.size > max_bytes:
-            raise ValueError(f"{member!r} in {path!s} exceeds the size limit")
-        with raw_tar, _text(raw_tar, max_bytes) as f:
-            yield f
+    # Stream the tar instead of tf.getmember(), which parses every header in
+    # the archive before returning (unbounded for a crafted tar of millions
+    # of tiny entries). The scan stops at the first match, counts entries,
+    # and reads through a bounded stream, so headers and skipped members
+    # alike are charged against max_bytes.
+    wanted = _check_member_name(member)
+    with open(path, "rb") as raw, gzip.GzipFile(fileobj=raw) as gz:
+        bounded = io.BufferedReader(_BoundedReader(gz, max_bytes))
+        with tarfile.open(fileobj=bounded, mode="r|") as tf:
+            for count, tinfo in enumerate(tf, 1):
+                if count > _MAX_BUNDLE_ENTRIES:
+                    raise ValueError(f"{path!s} has too many entries; possible tar bomb")
+                if PurePosixPath(tinfo.name).as_posix() != wanted:
+                    continue
+                raw_tar = tf.extractfile(tinfo) if tinfo.isfile() else None
+                if raw_tar is None:
+                    raise FileNotFoundError(f"{member!r} in {path!s} is not a regular file")
+                if tinfo.size > max_bytes:
+                    raise ValueError(f"{member!r} in {path!s} exceeds the size limit")
+                with raw_tar, _text(raw_tar, max_bytes) as f:
+                    yield f
+                return
+    raise FileNotFoundError(f"{member!r} not in {path!s}")
 
 
 def iter_jsonl(

@@ -2,6 +2,11 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Allowlist, not hatch's default of "everything not gitignored": earlier
+# sdists picked up untracked local tool state (.claude/).
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "tests", "examples", "docs", "README.md", "CHANGELOG.md", "SPEC.md", "LICENSE", "pyproject.toml"]
+
 [project]
 name = "arkiv"
 version = "0.4.0"

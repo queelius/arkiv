@@ -229,3 +229,45 @@ def test_str_paths_work_everywhere(tmp_path, name):
     assert peek_jsonl(out) == RECORDS[0]
     with open_member(out, "README.md") as f:
         assert f.read().startswith("---")
+
+
+class TestTarScanIsBounded:
+    def test_many_entries_before_member_hits_entry_cap(self, tmp_path, monkeypatch):
+        import arkiv.bundle as bundle
+
+        monkeypatch.setattr(bundle, "_MAX_BUNDLE_ENTRIES", 50)
+        out = tmp_path / "many.tar.gz"
+        with tarfile.open(out, "w:gz") as tf:
+            for i in range(100):
+                info = tarfile.TarInfo(f"junk/{i}")
+                tf.addfile(info, io.BytesIO(b""))
+            data = records_to_jsonl(RECORDS)
+            info = tarfile.TarInfo("records.jsonl")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        with pytest.raises(ValueError):
+            list(iter_jsonl(out))
+
+    def test_scan_bytes_count_against_limit(self, tmp_path):
+        out = tmp_path / "big-prefix.tar.gz"
+        with tarfile.open(out, "w:gz") as tf:
+            filler = b"\0" * 200_000
+            info = tarfile.TarInfo("filler.bin")
+            info.size = len(filler)
+            tf.addfile(info, io.BytesIO(filler))
+            data = records_to_jsonl(RECORDS)
+            info = tarfile.TarInfo("records.jsonl")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        with pytest.raises(ValueError):
+            list(iter_jsonl(out, max_bytes=50_000))
+        assert list(iter_jsonl(out)) == RECORDS
+
+    def test_dot_slash_member_names_match(self, tmp_path):
+        out = tmp_path / "dot.tar.gz"
+        data = records_to_jsonl(RECORDS)
+        with tarfile.open(out, "w:gz") as tf:
+            info = tarfile.TarInfo("./records.jsonl")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        assert list(iter_jsonl(out)) == RECORDS

@@ -34,6 +34,9 @@ plumbing (six near-identical copies, with divergent bugs).
   instead of buffering. `peek_jsonl` reads within a 64 MiB budget. A
   directory-bundle member that is a symlink, or resolves outside the
   archive, is refused, and `write_bundle` will not write through one.
+  Finding a tar.gz member streams the archive (stopping at the first
+  match, with an entry cap and every header and skipped byte charged to
+  `max_bytes`) instead of `getmember()`, which parses all headers first.
 - `bundle_format(path)`: classify a path as `dir`, `zip`, `tar.gz`,
   `jsonl`, or `jsonl.gz`.
 - All of the above, plus `pack_bundle`, `unpack_bundle`, and `is_bundle`,
@@ -41,6 +44,8 @@ plumbing (six near-identical copies, with divergent bugs).
 
 ### Changed
 
+- The sdist is built from an explicit allowlist; earlier sdists included
+  untracked local tool configuration (`.claude/settings.local.json`).
 - `pack_bundle` output is now byte-reproducible as well (it previously
   stamped on-disk mtimes, the packer's uid/gid, and the wall clock into
   the gzip header).
