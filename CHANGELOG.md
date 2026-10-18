@@ -42,8 +42,18 @@ plumbing (six near-identical copies, with divergent bugs).
 - All of the above, plus `pack_bundle`, `unpack_bundle`, and `is_bundle`,
   are exported from the package root.
 
+### Fixed
+
+- `pack_bundle` and the source fingerprint dropped every `.db` /
+  `.sqlite` / `.sqlite3` file at any depth, so a database file that is
+  *content* (an EHR export's `media/viewer.db`) silently vanished from
+  bundles. Only the derived database at the archive root is skipped now;
+  both paths share one rule, `arkiv.bundle.is_source_path`.
+
 ### Changed
 
+- The package ships a `py.typed` marker, so type checkers use its
+  annotations instead of treating it as untyped.
 - The sdist is built from an explicit allowlist; earlier sdists included
   untracked local tool configuration (`.claude/settings.local.json`).
 - `pack_bundle` output is now byte-reproducible as well (it previously

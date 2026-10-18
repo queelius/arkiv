@@ -106,10 +106,21 @@ def is_bundle(path: PathLike) -> bool:
     return _format_of(path) is not None
 
 
-# Derived database forms are regenerable from the directory and must not be
-# shipped inside a bundle (a bundle serializes the directory form, not its
-# cache). Dot-prefixed entries (.git, .DS_Store, ...) are noise.
+# The derived database form (arkiv.db, or any .db/.sqlite beside README.md)
+# is regenerable from the directory and is not part of it: a bundle
+# serializes the directory form, not its cache. Only the archive *root* holds
+# that cache; a database file deeper down (media/viewer.db from an EHR
+# export) is content and must be kept. Dot-prefixed entries (.git,
+# .DS_Store, ...) are noise.
 _DERIVED_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
+
+
+def is_source_path(rel: PurePosixPath) -> bool:
+    """Whether an archive-relative path is part of the canonical directory
+    form (and so belongs in a bundle and in the source fingerprint)."""
+    if any(part.startswith(".") for part in rel.parts):
+        return False
+    return not (len(rel.parts) == 1 and rel.suffix.lower() in _DERIVED_SUFFIXES)
 
 
 def _within(child: Path, root: Path) -> bool:
@@ -119,15 +130,6 @@ def _within(child: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
-
-
-def _should_pack(rel: Path) -> bool:
-    """Whether an archive-relative path belongs in a transport bundle."""
-    if any(part.startswith(".") for part in rel.parts):
-        return False
-    if rel.suffix.lower() in _DERIVED_SUFFIXES:
-        return False
-    return True
 
 
 # Fixed member metadata, so packing identical content yields identical
@@ -372,7 +374,7 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
                 continue
             if p.is_file():
                 rel = p.relative_to(directory)
-                if _should_pack(rel):
+                if is_source_path(PurePosixPath(rel.as_posix())):
                     yield p, str(rel)
 
     if fmt == "zip":

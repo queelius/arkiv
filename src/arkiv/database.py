@@ -3,11 +3,12 @@
 import hashlib
 import json
 import sqlite3
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import yaml
 
+from .bundle import is_source_path
 from .record import Record, normalize_timestamp, parse_jsonl
 from .schema import (
     SchemaEntry,
@@ -37,16 +38,13 @@ def _is_within(child: Path, root: Path) -> bool:
         return False
 
 
-# Derived database forms are regenerable, so they are excluded from the
-# source fingerprint and from pack_bundle. Dot-prefixed entries are noise.
-_DERIVED_DB_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
 
 
 def iter_source_files(source_dir: Union[str, Path]) -> Iterator[Tuple[str, Path]]:
     """Yield ``(relposix, path)`` for each canonical source file.
 
-    Walks *source_dir* recursively, skipping derived database files
-    (``.db``/``.sqlite``/``.sqlite3``) and dot-prefixed entries. This is the
+    Walks *source_dir* recursively, skipping the derived database at the
+    root and dot-prefixed entries (:func:`arkiv.bundle.is_source_path`). This is the
     set of files that constitute the authoritative directory form: README,
     schema.yaml, the JSONL collections, and the media/ subtree.
     """
@@ -64,10 +62,8 @@ def iter_source_files(source_dir: Union[str, Path]) -> Iterator[Tuple[str, Path]
             continue
         if not p.is_file():
             continue
-        rel = p.relative_to(source_dir)
-        if any(part.startswith(".") for part in rel.parts):
-            continue
-        if p.suffix.lower() in _DERIVED_DB_SUFFIXES:
+        rel = PurePosixPath(p.relative_to(source_dir).as_posix())
+        if not is_source_path(rel):
             continue
         yield rel.as_posix(), p
 

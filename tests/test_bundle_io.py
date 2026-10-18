@@ -271,3 +271,23 @@ class TestTarScanIsBounded:
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
         assert list(iter_jsonl(out)) == RECORDS
+
+
+def test_only_the_root_database_is_derived(tmp_path):
+    """arkiv.db beside README.md is the regenerable cache; a database file
+    deeper in the tree (an EHR export's media/viewer.db) is content."""
+    from arkiv.database import iter_source_files
+
+    src = tmp_path / "src"
+    (src / "media").mkdir(parents=True)
+    (src / "records.jsonl").write_bytes(records_to_jsonl(RECORDS))
+    (src / "arkiv.db").write_bytes(b"cache")
+    (src / "media" / "viewer.db").write_bytes(b"content")
+    (src / "media" / "scan.sqlite").write_bytes(b"content")
+    out = tmp_path / "o.zip"
+    pack_bundle(src, out)
+    with zipfile.ZipFile(out) as zf:
+        assert sorted(zf.namelist()) == ["media/scan.sqlite", "media/viewer.db", "records.jsonl"]
+    assert [rel for rel, _ in iter_source_files(src)] == [
+        "media/scan.sqlite", "media/viewer.db", "records.jsonl",
+    ]
