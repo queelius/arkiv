@@ -90,6 +90,22 @@ def _require_inside(path: Path, archive_root: Path) -> None:
         )
 
 
+def _is_media_asset_path(rel: Any) -> bool:
+    """True if ``rel`` is a canonical POSIX path naming a file under ``media/``.
+
+    A structural check on the raw string, before any filesystem access: no
+    backslash or NUL, and every component is a plain name (no empty, ``.`` or
+    ``..`` component, so ``media/../x``, ``media//x`` and ``./media/x`` are
+    refused). It must also name at least one file below ``media/``.
+    """
+    if not isinstance(rel, str) or "\\" in rel or "\0" in rel:
+        return False
+    components = rel.split("/")
+    if any(c in ("", ".", "..") for c in components):
+        return False
+    return len(components) >= 2 and components[0] == _MEDIA_DIRNAME
+
+
 def _validate_collection_name(name):
     """Validate a collection name is safe for use as a file/directory name."""
     if not isinstance(name, str) or not name or not name.strip():
@@ -764,29 +780,29 @@ class Database:
     def _export_assets(self, output_dir: Path) -> None:
         """Write every row of _assets back to ``output_dir/<path>``.
 
-        Each path must lie under ``media/`` and stay within ``output_dir``
-        (defending against a crafted database whose asset rows name files
-        elsewhere in the archive or escape it). Databases
-        created before the _assets table existed simply have nothing to
-        write.
+        Each path must be a canonical path under ``media/`` (see
+        ``_is_media_asset_path``), and its resolved location must stay inside
+        the resolved ``media/`` directory. This defends against a crafted
+        database whose asset rows name files elsewhere in the archive or
+        escape it. Databases created before the _assets table existed simply
+        have nothing to write.
         """
         try:
             rows = self.conn.execute("SELECT path, content FROM _assets").fetchall()
         except sqlite3.OperationalError:
             return  # pre-_assets database: no assets to reconstruct
 
-        out_root = output_dir.resolve()
+        media_root = output_dir.resolve() / _MEDIA_DIRNAME
         for row in rows:
             rel, content = row[0], row[1]
-            parts = PurePosixPath(rel).parts
-            if len(parts) < 2 or parts[0] != _MEDIA_DIRNAME:
+            if not _is_media_asset_path(rel):
                 raise ValueError(
                     f"unsafe asset path (outside {_MEDIA_DIRNAME}/): {rel!r}"
                 )
             dest = output_dir / rel
-            if not _within(dest, out_root):
+            if not _within(dest, media_root):
                 raise ValueError(
-                    f"unsafe asset path (escapes the output directory): {rel!r}"
+                    f"unsafe asset path (escapes {_MEDIA_DIRNAME}/): {rel!r}"
                 )
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(content if content is not None else b"")

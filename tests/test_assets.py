@@ -143,13 +143,76 @@ class TestAssetSafety:
         db.close()
         assert (tmp_path / "out" / "README.md").read_bytes() != b"pwned"
 
-    @pytest.mark.parametrize("rel", ["data.jsonl", "schema.yaml", "media"])
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "data.jsonl",
+            "schema.yaml",
+            "media",
+            "media/",
+            "media/..",
+            "media/../README.md",
+            "media/a/../../schema.yaml",
+            "media/x/../../data.jsonl",
+            "/media/x",
+            "media\\..\\README.md",
+            "media/x\0.bin",
+            "./media/x",
+            "media//x",
+            "",
+        ],
+    )
     def test_export_refuses_asset_paths_not_under_media(self, tmp_path, rel):
         db = Database(tmp_path / "x.db")
         db.conn.execute("INSERT INTO _assets VALUES (?, ?)", (rel, b"pwned"))
         db.conn.commit()
+        out = tmp_path / "out"
         with pytest.raises(ValueError, match="unsafe asset path"):
-            db.export(tmp_path / "out")
+            db.export(out)
         db.close()
-        target = tmp_path / "out" / rel
-        assert not target.is_file() or target.read_bytes() != b"pwned"
+        # The crafted bytes must not be written anywhere under the output.
+        assert not any(
+            b"pwned" in p.read_bytes() for p in out.rglob("*") if p.is_file()
+        )
+
+    def test_export_refuses_media_path_resolving_outside_media(self, tmp_path):
+        # The row is canonical, but a symlink inside media/ points back at the
+        # archive root. The resolved target is inside the output directory yet
+        # outside media/, so it must be refused.
+        db = Database(tmp_path / "x.db")
+        db.conn.execute(
+            "INSERT INTO _assets VALUES ('media/up/README.md', ?)", (b"pwned",)
+        )
+        db.conn.commit()
+        out = tmp_path / "out"
+        (out / "media").mkdir(parents=True)
+        (out / "media" / "up").symlink_to(out, target_is_directory=True)
+        with pytest.raises(ValueError, match="unsafe asset path"):
+            db.export(out)
+        db.close()
+        assert (out / "README.md").read_bytes() != b"pwned"
+
+    def test_export_refuses_media_path_through_symlink_out_of_archive(self, tmp_path):
+        db = Database(tmp_path / "x.db")
+        db.conn.execute(
+            "INSERT INTO _assets VALUES ('media/link/x.bin', ?)", (b"pwned",)
+        )
+        db.conn.commit()
+        out = tmp_path / "out"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (out / "media").mkdir(parents=True)
+        (out / "media" / "link").symlink_to(outside, target_is_directory=True)
+        with pytest.raises(ValueError, match="unsafe asset path"):
+            db.export(out)
+        db.close()
+        assert not (outside / "x.bin").exists()
+
+    def test_canonical_media_path_exported_under_media(self, tmp_path):
+        db = Database(tmp_path / "x.db")
+        db.conn.execute("INSERT INTO _assets VALUES ('media/a/b.bin', ?)", (b"ok",))
+        db.conn.commit()
+        out = tmp_path / "out"
+        db.export(out)
+        db.close()
+        assert (out / "media" / "a" / "b.bin").read_bytes() == b"ok"
