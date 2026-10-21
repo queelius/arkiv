@@ -30,7 +30,7 @@ import tarfile
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import IO, Any, Dict, Iterable, Iterator, Mapping, Optional, Union
+from typing import IO, Any, Dict, Iterable, Iterator, Mapping, Optional, Tuple, Union
 
 
 PathLike = Union[str, Path]
@@ -130,6 +130,35 @@ def _within(child: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def iter_source_files(source_dir: PathLike) -> Iterator[Tuple[str, Path]]:
+    """Yield ``(relposix, path)`` for each canonical source file.
+
+    Walks *source_dir* recursively in sorted order, skipping the derived
+    database at the root and dot-prefixed entries (:func:`is_source_path`).
+    This is the set of files that constitute the authoritative directory
+    form: README, schema.yaml, the JSONL collections, and the media/ subtree.
+    It is the single walk shared by the source fingerprint, asset import, and
+    :func:`pack_bundle`.
+
+    Symlinks are never followed or yielded: an archive from an untrusted
+    source could point a link at /dev/zero (DoS) or at a file outside the
+    archive (information leak into the database and back out on export). A
+    symlink is not part of the canonical directory form, so even a link that
+    stays inside the archive is skipped (its real target is yielded in its
+    own right). Each path is also resolved and contained, so the guarantee
+    never depends on how ``rglob`` treats symlinked directories.
+    """
+    source_dir = Path(source_dir)
+    for p in sorted(source_dir.rglob("*")):
+        if p.is_symlink() or not _within(p, source_dir):
+            continue
+        if not p.is_file():
+            continue
+        rel = PurePosixPath(p.relative_to(source_dir).as_posix())
+        if is_source_path(rel):
+            yield rel.as_posix(), p
 
 
 # Fixed member metadata, so packing identical content yields identical
@@ -365,17 +394,8 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
         raise NotADirectoryError(str(directory))
 
     def _members():
-        for p in sorted(directory.rglob("*")):
-            # Do not follow symlinks: a symlink to a file outside the archive
-            # (or to /dev/zero) must not be packed by its target's content.
-            # rglob does not descend symlinked directories; the resolve-and-
-            # contain check makes that guarantee explicit either way.
-            if p.is_symlink() or not _within(p, directory):
-                continue
-            if p.is_file():
-                rel = p.relative_to(directory)
-                if is_source_path(PurePosixPath(rel.as_posix())):
-                    yield p, str(rel)
+        for rel, p in iter_source_files(directory):
+            yield p, rel
 
     if fmt == "zip":
         with zipfile.ZipFile(output, "w") as zf:

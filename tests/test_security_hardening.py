@@ -7,10 +7,20 @@
 """
 
 import os
+import subprocess
+import sys
 
 import pytest
 
 from arkiv.database import Database, _source_fingerprint
+
+
+def run_arkiv(*args):
+    return subprocess.run(
+        [sys.executable, "-m", "arkiv.cli", *args],
+        capture_output=True,
+        text=True,
+    )
 
 
 def _symlink_or_skip(target, link):
@@ -144,3 +154,73 @@ class TestSymlinkSafety:
         assert "data.jsonl" in names
         assert not any("passwd" in n for n in names)
         assert not any(n.startswith("sub/") for n in names)
+
+
+def _make_archive(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    (archive / "c.jsonl").write_text('{"content": "x"}\n')
+    (archive / "README.md").write_text("---\ncontents:\n- path: c.jsonl\n---\n")
+    return archive
+
+
+def _roundtrip(archive, out):
+    r = run_arkiv("convert", str(archive))
+    assert r.returncode == 0, r.stderr
+    r = run_arkiv("convert", str(archive / "arkiv.db"), str(out))
+    assert r.returncode == 0, r.stderr
+
+
+class TestMediaSymlinksNotImported:
+    def test_symlinked_media_dir_is_not_imported(self, tmp_path):
+        secret = tmp_path / "secret"
+        secret.mkdir()
+        (secret / "key").write_bytes(b"TOP SECRET")
+        archive = _make_archive(tmp_path)
+        _symlink_or_skip(secret, archive / "media")
+        out = tmp_path / "out"
+        _roundtrip(archive, out)
+        assert not (out / "media").exists()
+
+    def test_symlinked_media_file_is_not_imported(self, tmp_path):
+        secret = tmp_path / "secret"
+        secret.mkdir()
+        (secret / "key").write_bytes(b"TOP SECRET")
+        archive = _make_archive(tmp_path)
+        (archive / "media").mkdir()
+        _symlink_or_skip(secret / "key", archive / "media" / "pic.png")
+        out = tmp_path / "out"
+        _roundtrip(archive, out)
+        assert not (out / "media" / "pic.png").exists()
+
+    def test_internal_symlink_skipped_real_file_kept(self, tmp_path):
+        archive = _make_archive(tmp_path)
+        (archive / "media").mkdir()
+        original = b"\xff\xd8 jpeg bytes"
+        (archive / "media" / "2024.jpg").write_bytes(original)
+        _symlink_or_skip("2024.jpg", archive / "media" / "latest.jpg")
+        out = tmp_path / "out"
+        _roundtrip(archive, out)
+        assert (out / "media" / "2024.jpg").read_bytes() == original
+        assert not (out / "media" / "latest.jpg").exists()
+
+
+class TestPackBundleMemberNames:
+    def test_tar_and_zip_member_names_are_posix(self, tmp_path):
+        import tarfile
+        import zipfile
+
+        from arkiv.bundle import pack_bundle
+
+        archive = _make_archive(tmp_path)
+        (archive / "media" / "sub").mkdir(parents=True)
+        (archive / "media" / "sub" / "a.bin").write_bytes(b"a")
+        pack_bundle(archive, tmp_path / "b.tar.gz")
+        pack_bundle(archive, tmp_path / "b.zip")
+        with tarfile.open(tmp_path / "b.tar.gz") as tf:
+            tnames = tf.getnames()
+        with zipfile.ZipFile(tmp_path / "b.zip") as zf:
+            znames = zf.namelist()
+        assert tnames == znames == sorted(tnames)
+        assert "media/sub/a.bin" in tnames
+        assert all("\\" not in n for n in tnames)

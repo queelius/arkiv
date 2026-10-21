@@ -3,12 +3,12 @@
 import hashlib
 import json
 import sqlite3
-from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-from .bundle import is_source_path
+from .bundle import _within, iter_source_files
 from .record import Record, normalize_timestamp, parse_jsonl
 from .schema import (
     SchemaEntry,
@@ -24,48 +24,6 @@ _UNSAFE_NAMES = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)}
 # URIs (SPEC 1.2). Its contents are carried through the database form as
 # BLOBs in the _assets table so the two forms stay isomorphic.
 _MEDIA_DIRNAME = "media"
-
-
-def _is_within(child: Path, root: Path) -> bool:
-    """True if ``child`` is ``root`` or lives under it (both resolved).
-
-    Python 3.8 lacks ``Path.is_relative_to``; this is the portable form.
-    """
-    try:
-        child.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-
-
-def iter_source_files(source_dir: Union[str, Path]) -> Iterator[Tuple[str, Path]]:
-    """Yield ``(relposix, path)`` for each canonical source file.
-
-    Walks *source_dir* recursively, skipping the derived database at the
-    root and dot-prefixed entries (:func:`arkiv.bundle.is_source_path`). This is the
-    set of files that constitute the authoritative directory form: README,
-    schema.yaml, the JSONL collections, and the media/ subtree.
-    """
-    source_dir = Path(source_dir)
-    for p in sorted(source_dir.rglob("*")):
-        # Never follow symlinks: arkiv archives are plain files, and an
-        # archive from an untrusted source could point a symlink at
-        # /dev/zero (DoS) or a file outside the archive (info leak into the
-        # fingerprint). A symlink is not part of the canonical directory form.
-        # rglob does not descend symlinked directories, but we also resolve
-        # and contain each path so the guarantee never depends on that detail.
-        if p.is_symlink():
-            continue
-        if not _is_within(p, source_dir):
-            continue
-        if not p.is_file():
-            continue
-        rel = PurePosixPath(p.relative_to(source_dir).as_posix())
-        if not is_source_path(rel):
-            continue
-        yield rel.as_posix(), p
 
 
 def _source_fingerprint(source_dir: Union[str, Path]) -> str:
@@ -783,7 +741,7 @@ class Database:
         for row in rows:
             rel, content = row[0], row[1]
             dest = output_dir / rel
-            if not _is_within(dest, out_root):
+            if not _within(dest, out_root):
                 raise ValueError(
                     f"unsafe asset path (escapes the output directory): {rel!r}"
                 )
@@ -800,20 +758,16 @@ class Database:
         are cleared first, keeping re-import idempotent. Returns the number
         of asset files stored.
         """
-        source_dir = Path(source_dir)
-        media_dir = source_dir / _MEDIA_DIRNAME
         self.conn.execute("DELETE FROM _assets")
         count = 0
-        if media_dir.is_dir():
-            for p in sorted(media_dir.rglob("*")):
-                if p.is_file():
-                    rel = p.relative_to(source_dir).as_posix()
-                    self.conn.execute(
-                        "INSERT OR REPLACE INTO _assets (path, content) "
-                        "VALUES (?, ?)",
-                        (rel, p.read_bytes()),
-                    )
-                    count += 1
+        prefix = _MEDIA_DIRNAME + "/"
+        for rel, path in iter_source_files(source_dir):
+            if rel.startswith(prefix):
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO _assets (path, content) VALUES (?, ?)",
+                    (rel, path.read_bytes()),
+                )
+                count += 1
         self.conn.commit()
         return count
 
