@@ -131,3 +131,25 @@ class TestAssetSafety:
             db.export(tmp_path / "out")
         db.close()
         assert not (tmp_path / "escaped.bin").exists()
+
+    def test_export_refuses_asset_rows_outside_media(self, tmp_path):
+        # Only rows under media/ are reconstructed on export; a crafted row
+        # naming a file elsewhere in the archive must not overwrite it.
+        db = Database(tmp_path / "x.db")
+        db.conn.execute("INSERT INTO _assets VALUES ('README.md', ?)", (b"pwned",))
+        db.conn.commit()
+        with pytest.raises(ValueError, match="unsafe asset path"):
+            db.export(tmp_path / "out")
+        db.close()
+        assert (tmp_path / "out" / "README.md").read_bytes() != b"pwned"
+
+    @pytest.mark.parametrize("rel", ["data.jsonl", "schema.yaml", "media"])
+    def test_export_refuses_asset_paths_not_under_media(self, tmp_path, rel):
+        db = Database(tmp_path / "x.db")
+        db.conn.execute("INSERT INTO _assets VALUES (?, ?)", (rel, b"pwned"))
+        db.conn.commit()
+        with pytest.raises(ValueError, match="unsafe asset path"):
+            db.export(tmp_path / "out")
+        db.close()
+        target = tmp_path / "out" / rel
+        assert not target.is_file() or target.read_bytes() != b"pwned"

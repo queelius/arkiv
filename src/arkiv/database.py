@@ -764,8 +764,9 @@ class Database:
     def _export_assets(self, output_dir: Path) -> None:
         """Write every row of _assets back to ``output_dir/<path>``.
 
-        Each path is validated to stay within ``output_dir`` (defending
-        against a crafted database with an escaping asset path). Databases
+        Each path must lie under ``media/`` and stay within ``output_dir``
+        (defending against a crafted database whose asset rows name files
+        elsewhere in the archive or escape it). Databases
         created before the _assets table existed simply have nothing to
         write.
         """
@@ -777,6 +778,11 @@ class Database:
         out_root = output_dir.resolve()
         for row in rows:
             rel, content = row[0], row[1]
+            parts = PurePosixPath(rel).parts
+            if len(parts) < 2 or parts[0] != _MEDIA_DIRNAME:
+                raise ValueError(
+                    f"unsafe asset path (outside {_MEDIA_DIRNAME}/): {rel!r}"
+                )
             dest = output_dir / rel
             if not _within(dest, out_root):
                 raise ValueError(
