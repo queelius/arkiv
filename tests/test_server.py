@@ -1,6 +1,8 @@
 """Tests for arkiv MCP server tools (unit tests, no MCP transport)."""
 
 import json
+import time
+
 import pytest
 from arkiv.server import ArkivServer
 
@@ -208,3 +210,106 @@ class TestWriteRecordMethod:
         srv.close()
         assert "error" in out
         srv.close()
+
+
+INFINITE = (
+    "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) "
+    "SELECT count(*) FROM c"
+)
+
+
+class TestQueryLimits:
+    """The MCP sql_query surface must bound time and cell size, not just rows:
+    a recursive CTE can hang the server and one huge cell can flood the
+    model's context."""
+
+    @pytest.fixture
+    def server(self, tmp_path):
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        from arkiv.database import Database
+
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="data")
+        db.close()
+        srv = ArkivServer(db_path=tmp_path / "test.db")
+        yield srv
+        srv.close()
+
+    @pytest.fixture
+    def writable_server(self, tmp_path):
+        srv = ArkivServer(db_path=tmp_path / "w.db", writable=True)
+        yield srv
+        srv.close()
+
+    def test_sql_query_times_out(self, server):
+        t0 = time.monotonic()
+        with pytest.raises(ValueError, match="time limit"):
+            server.run_sql_capped(INFINITE, timeout_s=0.2)
+        assert time.monotonic() - t0 < 5
+
+    def test_timeout_message_names_the_limit(self, server):
+        with pytest.raises(ValueError, match="0.2 second time limit"):
+            server.run_sql_capped(INFINITE, timeout_s=0.2)
+
+    def test_timeout_does_not_leak_into_next_query(self, server):
+        with pytest.raises(ValueError):
+            server.run_sql_capped(INFINITE, timeout_s=0.2)
+        sql = (
+            "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c "
+            "WHERE x < 200000) SELECT count(*) AS n FROM c"
+        )
+        assert server.db.query(sql) == [{"n": 200000}]
+
+    def test_other_operational_errors_are_not_reported_as_timeouts(self, server):
+        with pytest.raises(ValueError) as exc:
+            server.run_sql_capped("SELECT nope FROM records", timeout_s=5)
+        assert "time limit" not in str(exc.value)
+
+    def test_fast_query_succeeds_within_timeout(self, server):
+        out = server.run_sql_capped("SELECT content FROM records", timeout_s=5)
+        assert out["rows"] == [{"content": "hello"}]
+        assert "cells_truncated" not in out
+
+    def test_default_limits(self):
+        from arkiv import server as srv
+
+        assert srv.DEFAULT_QUERY_TIMEOUT_S == 10.0
+        assert srv.DEFAULT_MAX_CELL_CHARS == 100_000
+
+    def test_long_cell_is_truncated(self, writable_server):
+        writable_server.write_record("c", "x" * 500)
+        r = writable_server.run_sql_capped(
+            "SELECT content FROM records", max_cell_chars=100
+        )
+        assert r["rows"][0]["content"] == "x" * 100
+        assert r["cells_truncated"] == 1
+        assert "100" in r["note"]
+
+    def test_bytes_cell_is_truncated(self, server):
+        r = server.run_sql_capped(
+            "SELECT randomblob(500) AS b, 'ok' AS s", max_cell_chars=100
+        )
+        assert len(r["rows"][0]["b"]) == 100
+        assert r["rows"][0]["s"] == "ok"
+        assert r["cells_truncated"] == 1
+
+    def test_cell_at_limit_is_untouched(self, writable_server):
+        writable_server.write_record("c", "x" * 100)
+        r = writable_server.run_sql_capped(
+            "SELECT content FROM records", max_cell_chars=100
+        )
+        assert r["rows"][0]["content"] == "x" * 100
+        assert "cells_truncated" not in r
+        assert "note" not in r
+
+    def test_cell_and_row_truncation_notes_combine(self, writable_server):
+        for _ in range(3):
+            writable_server.write_record("c", "x" * 500)
+        r = writable_server.run_sql_capped(
+            "SELECT content FROM records", max_rows=2, max_cell_chars=100
+        )
+        assert r["truncated"] is True
+        assert r["cells_truncated"] == 2
+        assert "LIMIT/OFFSET" in r["note"]
+        assert "100" in r["note"]

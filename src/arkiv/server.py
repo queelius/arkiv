@@ -10,6 +10,14 @@ from .database import Database
 # query cannot pull (or OOM on) the whole archive in one call.
 DEFAULT_MAX_ROWS = 1000
 
+# A statement still running after this many seconds is aborted, so a
+# pathological query (e.g. an unbounded recursive CTE) cannot hang the server.
+DEFAULT_QUERY_TIMEOUT_S = 10.0
+
+# A text or blob cell longer than this is cut, so one huge value cannot flood
+# the model's context regardless of the row cap.
+DEFAULT_MAX_CELL_CHARS = 100_000
+
 
 class ArkivServer:
     """Server exposing read-only tools (get_manifest, get_schema, sql_query)
@@ -60,25 +68,47 @@ class ArkivServer:
         return self.db.query(query)
 
     def run_sql_capped(
-        self, query: str, max_rows: int = DEFAULT_MAX_ROWS
+        self,
+        query: str,
+        max_rows: int = DEFAULT_MAX_ROWS,
+        timeout_s: float = DEFAULT_QUERY_TIMEOUT_S,
+        max_cell_chars: int = DEFAULT_MAX_CELL_CHARS,
     ) -> Dict[str, Any]:
-        """Run a read-only query for the MCP surface, capped at *max_rows*.
+        """Run a read-only query for the MCP surface with bounded output.
 
-        Returns ``{rows, row_count, truncated}`` plus a paging ``note`` when
-        the result was truncated, so the LLM knows to add LIMIT/OFFSET rather
-        than assuming it received everything.
+        Rows are capped at *max_rows*, execution at *timeout_s* seconds
+        (``ValueError`` when exceeded), and each ``str``/``bytes`` cell at
+        *max_cell_chars*. Returns ``{rows, row_count, truncated}``, plus
+        ``cells_truncated`` (a count) when any cell was cut, plus a ``note``
+        explaining each kind of truncation so the LLM knows to add
+        LIMIT/OFFSET or SUBSTR rather than assuming it saw everything.
         """
-        rows, truncated = self.db.query_bounded(query, max_rows)
+        rows, truncated = self.db.query_bounded(query, max_rows, timeout_s)
+        cells_truncated = 0
+        for row in rows:
+            for key, value in row.items():
+                if isinstance(value, (str, bytes)) and len(value) > max_cell_chars:
+                    row[key] = value[:max_cell_chars]
+                    cells_truncated += 1
         result: Dict[str, Any] = {
             "rows": rows,
             "row_count": len(rows),
             "truncated": truncated,
         }
+        notes = []
         if truncated:
-            result["note"] = (
+            notes.append(
                 f"Result truncated to {max_rows} rows. Add LIMIT/OFFSET to "
                 f"your query to page through the rest."
             )
+        if cells_truncated:
+            result["cells_truncated"] = cells_truncated
+            notes.append(
+                f"{cells_truncated} cell(s) were cut to {max_cell_chars} "
+                f"characters. Use SUBSTR to read other parts of a long value."
+            )
+        if notes:
+            result["note"] = " ".join(notes)
         return result
 
     def write_record(
@@ -147,7 +177,7 @@ def run_mcp_server(db_path: str, writable: bool = False) -> None:
 
     @mcp.tool()
     def sql_query(query: str) -> str:
-        """Run a read-only SQL query against the archive. The 'records' table has columns: id, collection, mimetype, uri, content, timestamp, metadata (JSON). Use json_extract(metadata, '$.key') to query metadata fields. Only SELECT statements are allowed. Returns an object {rows, row_count, truncated}; results are capped, so if 'truncated' is true add LIMIT/OFFSET to page."""
+        """Run a read-only SQL query against the archive. The 'records' table has columns: id, collection, mimetype, uri, content, timestamp, metadata (JSON). Use json_extract(metadata, '$.key') to query metadata fields. Only SELECT statements are allowed. Returns an object {rows, row_count, truncated}; results are capped, so if 'truncated' is true add LIMIT/OFFSET to page. Queries are aborted after 10 seconds, and any text or blob cell longer than 100000 characters is cut (reported as 'cells_truncated'; use SUBSTR to read other parts)."""
         return json.dumps(arkiv.run_sql_capped(query), indent=2, default=str)
 
     if writable:

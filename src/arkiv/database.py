@@ -3,6 +3,7 @@
 import hashlib
 import json
 import sqlite3
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Union
 
@@ -413,20 +414,38 @@ class Database:
         return rows
 
     def query_bounded(
-        self, sql: str, max_rows: int
+        self, sql: str, max_rows: int, timeout_s: Optional[float] = None
     ) -> "tuple[List[Dict[str, Any]], bool]":
         """Run a read-only query, returning at most *max_rows* rows.
 
         Returns ``(rows, truncated)`` and fetches at most ``max_rows + 1``
         rows internally, so a broad query cannot materialize an unbounded
-        result. Used by the MCP server to cap what an LLM can pull at once.
+        result. With *timeout_s*, a statement still running after that many
+        seconds is aborted and ``ValueError`` is raised. Used by the MCP
+        server to cap what an LLM can pull at once.
         """
-        return self._run_query(sql, max_rows=max_rows)
+        return self._run_query(sql, max_rows=max_rows, timeout_s=timeout_s)
 
-    def _run_query(self, sql, max_rows):
+    # How many SQLite VM steps pass between deadline checks.
+    _PROGRESS_INTERVAL = 10_000
+
+    def _run_query(self, sql, max_rows, timeout_s=None):
         normalized = sql.strip().upper()
         if not normalized.startswith(("SELECT", "WITH")):
             raise ValueError("Only SELECT queries are allowed")
+
+        timed_out = False
+        if timeout_s is not None:
+            deadline = time.monotonic() + timeout_s
+
+            def _past_deadline() -> int:
+                nonlocal timed_out
+                if time.monotonic() > deadline:
+                    timed_out = True
+                    return 1  # nonzero aborts the statement
+                return 0
+
+            self.conn.set_progress_handler(_past_deadline, self._PROGRESS_INTERVAL)
 
         self.conn.set_authorizer(self._read_only_authorizer)
         try:
@@ -444,9 +463,15 @@ class Database:
             rows = fetched[:max_rows]
             return ([dict(zip(columns, row)) for row in rows], truncated)
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+            if timed_out:
+                raise ValueError(
+                    f"query exceeded the {timeout_s:g} second time limit"
+                ) from None
             raise ValueError(str(e)) from None
         finally:
             self.conn.set_authorizer(None)
+            if timeout_s is not None:
+                self.conn.set_progress_handler(None, 0)
 
     def get_info(self) -> Dict[str, Any]:
         """Get database info: total records, collections, counts."""
