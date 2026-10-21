@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -1006,6 +1007,13 @@ class Database:
         self.conn.close()
 
 
+def _current_umask() -> int:
+    """The process umask (it can only be read by setting it, so restore it)."""
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
 def refuse_unexported_writes(db_path: Union[str, Path]) -> None:
     """Refuse to replace a database that holds unexported writes.
 
@@ -1013,20 +1021,31 @@ def refuse_unexported_writes(db_path: Union[str, Path]) -> None:
     exist only in the database form until it is exported into a directory.
     Rebuilding the database from its directory would silently destroy them,
     so raise a ``ValueError`` naming the export command instead. A missing
-    database has nothing to lose; one from an older arkiv without the
-    counter counts as zero writes.
+    (or zero-byte) database has nothing to lose; one from an older arkiv
+    without the counter counts as zero writes. A SQLite file with no
+    ``records`` table is not an arkiv database at all, so it is refused
+    rather than replaced or written into.
     """
     db_path = Path(db_path)
-    if not db_path.exists():
+    if not db_path.exists() or db_path.stat().st_size == 0:
         return
     try:
         db = Database(db_path, read_only=True)
         try:
+            is_arkiv = (
+                db.conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'records'"
+                ).fetchone()
+                is not None
+            )
             pending = db.get_unexported_writes()
         finally:
             db.close()
     except sqlite3.DatabaseError as e:
-        raise ValueError(f"{db_path} is not a readable arkiv database: {e}")
+        raise ValueError(f"{db_path} is not a readable arkiv database: {e}") from e
+    if not is_arkiv:
+        raise ValueError(f"{db_path} is not an arkiv database; refusing to replace it")
     if pending > 0:
         raise ValueError(
             f"{db_path} holds {pending} unexported write(s) that a rebuild "
@@ -1050,11 +1069,19 @@ def build_database(
     Refuses (via :func:`refuse_unexported_writes`) to replace a database
     holding unexported writes. With ``fingerprint``, records the source
     directory's fingerprint so ``arkiv status`` can detect later drift.
+    The result keeps the mode of the database it replaces; a new database
+    follows the umask, as sqlite itself would create it. When ``output`` is
+    a symlink, its target is replaced and the link is left in place.
+
     Returns the number of records imported.
     """
     source = Path(source)
     output = Path(output)
     refuse_unexported_writes(output)
+    if output.is_symlink():
+        output = output.resolve()
+    if not output.parent.is_dir():
+        raise FileNotFoundError(f"Output directory does not exist: {output.parent}")
     fd, tmp_name = tempfile.mkstemp(dir=output.parent, prefix=".arkiv-", suffix=".db")
     os.close(fd)
     tmp = Path(tmp_name)
@@ -1071,6 +1098,10 @@ def build_database(
                 db.store_source_fingerprint(directory)
         finally:
             db.close()
+        if output.exists():
+            shutil.copymode(output, tmp)
+        else:
+            os.chmod(tmp, 0o666 & ~_current_umask())
         os.replace(tmp, output)
     except BaseException:
         try:

@@ -874,3 +874,148 @@ def test_refuse_unexported_writes_without_metadata_table(tmp_path):
     conn.close()
     refuse_unexported_writes(old)  # missing counter counts as 0
     refuse_unexported_writes(tmp_path / "missing.db")  # absent db: nothing to lose
+
+
+# --- Fix round 1: read-only export source, mode/symlink, foreign dbs ---
+
+
+def _simple_archive(root, content="one"):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "c.jsonl").write_text('{"content": "%s"}\n' % content)
+    (root / "README.md").write_text("---\ncontents:\n- path: c.jsonl\n---\n")
+    return root
+
+
+def test_export_from_read_only_db_warns_and_succeeds(tmp_path):
+    import os
+    import stat
+
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    archive = _converted_archive_with_write(tmp_path)
+    src = tmp_path / "ro.db"
+    src.write_bytes((archive / "arkiv.db").read_bytes())
+    src.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 0444
+    try:
+        out = tmp_path / "out"
+        r = run_arkiv("convert", str(src), str(out))
+        assert r.returncode == 0, r.stderr
+        assert "Traceback" not in r.stderr
+        assert (
+            f"exported, but could not record the export in {src}; "
+            "the unexported-writes guard stays set" in r.stderr
+        )
+        assert (out / "README.md").exists()
+        assert "written" in (out / "c.jsonl").read_text()
+    finally:
+        src.chmod(0o644)
+
+
+def test_fresh_convert_follows_umask(tmp_path):
+    import os
+    import stat
+
+    archive = _simple_archive(tmp_path / "archive")
+    old = os.umask(0o022)
+    try:
+        r = run_arkiv("convert", str(archive))
+    finally:
+        os.umask(old)
+    assert r.returncode == 0, r.stderr
+    assert stat.S_IMODE((archive / "arkiv.db").stat().st_mode) == 0o644
+
+
+def test_rebuild_keeps_existing_db_mode(tmp_path):
+    import stat
+
+    archive = _simple_archive(tmp_path / "archive")
+    assert run_arkiv("convert", str(archive)).returncode == 0
+    (archive / "arkiv.db").chmod(0o640)
+    _simple_archive(archive, content="two")
+    r = run_arkiv("convert", str(archive))
+    assert r.returncode == 0, r.stderr
+    assert stat.S_IMODE((archive / "arkiv.db").stat().st_mode) == 0o640
+    assert contents_of(archive / "arkiv.db") == ["two"]
+
+
+def test_rebuild_through_symlinked_db_updates_target(tmp_path):
+    import os
+
+    archive = _simple_archive(tmp_path / "archive")
+    assert run_arkiv("convert", str(archive)).returncode == 0
+    store = tmp_path / "store"
+    store.mkdir()
+    real = store / "real.db"
+    os.replace(archive / "arkiv.db", real)
+    try:
+        os.symlink(real, archive / "arkiv.db")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+
+    _simple_archive(archive, content="two")
+    r = run_arkiv("convert", str(archive))
+    assert r.returncode == 0, r.stderr
+    link = archive / "arkiv.db"
+    assert link.is_symlink()
+    assert os.readlink(link) == str(real)
+    assert contents_of(real) == ["two"]
+    assert not list(archive.glob(".arkiv-*"))
+    assert not list(store.glob(".arkiv-*"))
+
+
+def _foreign_db(path):
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE important (x TEXT)")
+    conn.execute("INSERT INTO important VALUES ('keep me')")
+    conn.commit()
+    conn.close()
+
+
+def _foreign_rows(path):
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    try:
+        return conn.execute("SELECT x FROM important").fetchall()
+    finally:
+        conn.close()
+
+
+def test_convert_dir_refuses_to_replace_foreign_database(tmp_path):
+    archive = _simple_archive(tmp_path / "archive")
+    foreign = tmp_path / "foreign.db"
+    _foreign_db(foreign)
+    r = run_arkiv("convert", str(archive), str(foreign))
+    assert r.returncode == 1
+    assert "Traceback" not in r.stderr
+    assert f"{foreign} is not an arkiv database; refusing to replace it" in r.stderr
+    assert _foreign_rows(foreign) == [("keep me",)]
+
+
+def test_convert_jsonl_refuses_foreign_database(tmp_path):
+    archive = _simple_archive(tmp_path / "archive")
+    foreign = tmp_path / "foreign.db"
+    _foreign_db(foreign)
+    r = run_arkiv("convert", str(archive / "c.jsonl"), str(foreign))
+    assert r.returncode == 1
+    assert "not an arkiv database" in r.stderr
+    assert _foreign_rows(foreign) == [("keep me",)]
+    from arkiv.database import Database
+
+    db = Database(foreign, read_only=True)
+    try:
+        tables = {r["name"] for r in db.query("SELECT name FROM sqlite_master")}
+    finally:
+        db.close()
+    assert "records" not in tables
+
+
+def test_convert_into_missing_output_directory_errors(tmp_path):
+    archive = _simple_archive(tmp_path / "archive")
+    missing = tmp_path / "nope"
+    r = run_arkiv("convert", str(archive), str(missing / "out.db"))
+    assert r.returncode == 1
+    assert f"Output directory does not exist: {missing}" in r.stderr
+    assert ".arkiv-" not in r.stderr

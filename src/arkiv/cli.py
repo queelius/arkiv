@@ -92,11 +92,22 @@ def cmd_convert(args):
             # A full export means every write now exists in a directory form,
             # so a later rebuild loses nothing: record that directory and
             # reset the unexported-writes counter.
-            db = Database(input_path)
+            import sqlite3
+
             try:
-                db.store_source_fingerprint(output)
-            finally:
-                db.close()
+                db = Database(input_path)
+                try:
+                    db.store_source_fingerprint(output)
+                finally:
+                    db.close()
+            except (sqlite3.OperationalError, PermissionError):
+                # A read-only (or locked) source: the export itself is done,
+                # only the bookkeeping failed, so warn instead of failing.
+                print(
+                    f"Warning: exported, but could not record the export in "
+                    f"{input_path}; the unexported-writes guard stays set",
+                    file=sys.stderr,
+                )
         print(f"Converted {input_path.name} → {output}")
         return
 
