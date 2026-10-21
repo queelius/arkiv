@@ -224,3 +224,105 @@ class TestPackBundleMemberNames:
         assert tnames == znames == sorted(tnames)
         assert "media/sub/a.bin" in tnames
         assert all("\\" not in n for n in tnames)
+
+
+def _secret_file(tmp_path):
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    f = secret / "history.jsonl"
+    f.write_text('{"content": "PRIVATE"}\n')
+    return f
+
+
+def _readme_listing(archive, *paths):
+    entries = "".join(f"- path: {p}\n" for p in paths)
+    (archive / "README.md").write_text(f"---\ncontents:\n{entries}---\n")
+
+
+class TestContentsPathsStayInsideArchive:
+    def test_contents_absolute_path_rejected(self, tmp_path):
+        secret = _secret_file(tmp_path)
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        _readme_listing(archive, secret)
+        db = Database(tmp_path / "x.db")
+        with pytest.raises(ValueError, match="unsafe contents path"):
+            db.import_readme(archive / "README.md")
+        db.close()
+
+    def test_contents_parent_path_rejected(self, tmp_path):
+        _secret_file(tmp_path)
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        _readme_listing(archive, "../secret/history.jsonl")
+        db = Database(tmp_path / "x.db")
+        with pytest.raises(ValueError, match="unsafe contents path"):
+            db.import_readme(archive / "README.md")
+        db.close()
+
+    def test_contents_backslash_path_rejected(self, tmp_path):
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        _readme_listing(archive, "'sub\\data.jsonl'")
+        db = Database(tmp_path / "x.db")
+        with pytest.raises(ValueError, match="unsafe contents path"):
+            db.import_readme(archive / "README.md")
+        db.close()
+
+    def test_contents_symlink_escape_rejected(self, tmp_path):
+        secret = _secret_file(tmp_path)
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        _symlink_or_skip(secret, archive / "c.jsonl")
+        _readme_listing(archive, "c.jsonl")
+        db = Database(tmp_path / "x.db")
+        with pytest.raises(ValueError, match="unsafe contents path"):
+            db.import_readme(archive / "README.md")
+        db.close()
+
+    def test_nested_contents_escape_rejected(self, tmp_path):
+        _secret_file(tmp_path)
+        archive = tmp_path / "archive"
+        (archive / "sub").mkdir(parents=True)
+        _readme_listing(archive, "sub/")
+        _readme_listing(archive / "sub", "../../secret/history.jsonl")
+        db = Database(tmp_path / "x.db")
+        with pytest.raises(ValueError, match="unsafe contents path"):
+            db.import_readme(archive / "README.md")
+        db.close()
+
+    def test_nested_parent_part_rejected_even_inside_archive(self, tmp_path):
+        archive = tmp_path / "archive"
+        (archive / "sub").mkdir(parents=True)
+        (archive / "shared.jsonl").write_text('{"content": "ok"}\n')
+        _readme_listing(archive, "sub/")
+        _readme_listing(archive / "sub", "../shared.jsonl")
+        db = Database(tmp_path / "x.db")
+        # '..' is refused outright, even when the target stays inside.
+        with pytest.raises(ValueError, match="unsafe contents path"):
+            db.import_readme(archive / "README.md")
+        db.close()
+
+    def test_bundle_contents_escape_fails_cleanly(self, tmp_path):
+        import zipfile
+
+        secret = _secret_file(tmp_path)
+        evil = tmp_path / "evil.zip"
+        with zipfile.ZipFile(evil, "w") as zf:
+            zf.writestr("README.md", f"---\ncontents:\n- path: {secret}\n---\n")
+        out_db = tmp_path / "out.db"
+        r = run_arkiv("convert", str(evil), str(out_db))
+        assert r.returncode == 1
+        assert "unsafe contents path" in r.stderr
+        assert not out_db.exists() or "PRIVATE" not in out_db.read_bytes().decode(
+            "latin-1"
+        )
+
+    def test_relative_subdirectory_contents_still_import(self, tmp_path):
+        archive = tmp_path / "archive"
+        (archive / "sub").mkdir(parents=True)
+        (archive / "sub" / "data.jsonl").write_text('{"content": "x"}\n')
+        _readme_listing(archive, "sub/data.jsonl")
+        db = Database(tmp_path / "x.db")
+        assert db.import_readme(archive / "README.md") == 1
+        db.close()

@@ -3,7 +3,7 @@
 import hashlib
 import json
 import sqlite3
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
@@ -51,6 +51,26 @@ def _collection_name_from_path(path: str) -> str:
     if name.endswith(".jsonl"):
         name = name[: -len(".jsonl")]
     return name
+
+
+def _resolve_contents_entry(base_dir: Path, archive_root: Path, raw: str) -> Path:
+    """Resolve a README ``contents`` entry; refuse any that leave the archive.
+
+    ``raw`` comes from untrusted frontmatter. It must be a relative POSIX path
+    with no ``..`` part and no backslash, and the joined path must still resolve
+    (following symlinks) inside ``archive_root``. Otherwise a hostile archive
+    could pull any readable ``.jsonl`` on the machine into the database.
+    """
+    unsafe = ValueError(f"unsafe contents path (must stay inside the archive): {raw!r}")
+    if not isinstance(raw, str) or "\\" in raw:
+        raise unsafe
+    posix = PurePosixPath(raw)
+    if posix.is_absolute() or ".." in posix.parts:
+        raise unsafe
+    entry = base_dir / raw
+    if not _within(entry, archive_root):
+        raise unsafe
+    return entry
 
 
 def _validate_collection_name(name):
@@ -802,7 +822,7 @@ class Database:
         for item in readme.frontmatter.get("contents", []):
             if not isinstance(item, dict) or "path" not in item:
                 continue
-            entry_path = base_dir / item["path"]
+            entry_path = _resolve_contents_entry(base_dir, base_dir, item["path"])
             if entry_path.is_dir():
                 sub_readme = entry_path / "README.md"
                 if sub_readme.exists():
@@ -874,7 +894,7 @@ class Database:
         for item in sub_readme.frontmatter.get("contents", []):
             if not isinstance(item, dict) or "path" not in item:
                 continue
-            entry_path = base_dir / item["path"]
+            entry_path = _resolve_contents_entry(base_dir, archive_root, item["path"])
             if entry_path.suffix == ".jsonl" and entry_path.exists():
                 total += self._import_collection_checked(entry_path, seen, archive_root)
 
