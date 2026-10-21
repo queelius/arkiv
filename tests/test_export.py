@@ -497,7 +497,9 @@ class TestNonFiniteExport:
 
     def test_export_writes_strict_json(self, tmp_path):
         db = Database(tmp_path / "x.db")
-        db.insert_record("c", "hello", metadata={"v": float("nan"), "w": [float("inf")]})
+        db.insert_record(
+            "c", "hello", metadata={"v": float("nan"), "w": [float("inf")]}
+        )
         out = tmp_path / "out"
         db.export(out)
         db.close()

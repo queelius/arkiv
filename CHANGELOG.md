@@ -5,6 +5,112 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-21
+
+A hardening release from the 2026-10-21 full review
+(`docs/reviews/2026-10-21-full-review.md`): untrusted bundles and archives
+can no longer read or write outside themselves or exhaust memory,
+`arkiv convert` no longer destroys records, and malformed input reports a
+clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
+
+### Security
+
+- S1: README `contents` entries (and `schema.yaml` and nested README
+  files) that are absolute, contain `..` or a backslash, or resolve
+  outside the archive are refused, so a crafted archive can no longer
+  import arbitrary `.jsonl` files from the host.
+- S2: symlinks under `media/` (including a symlinked `media/` itself) are
+  never followed or imported, so host files cannot land in the database
+  and then in exported bundles. Directory import, the source fingerprint,
+  and `pack_bundle` now share one walk (`iter_source_files`).
+- S3: tar bundles are read with bounded headers: GNU long-name and pax
+  headers over 1 MiB, or chained deeper than 8, are refused before they
+  are read into memory, and sparse members are refused. A 65 KB archive
+  no longer needs hundreds of MiB, and `unpack_bundle` is bounded too.
+- S4: a database path containing `#`, `?`, or `%` (or non-ASCII
+  characters, or spaces) opens the file it names when opened read-only,
+  instead of opening, and creating, a different file.
+- S5: duplicate tar and zip members are refused on unpack, as are tar
+  hard and symbolic links, FIFOs, and devices, so `iter_jsonl` and
+  `convert` can no longer disagree about an archive's content.
+- S6: MCP `sql_query` aborts after 10 seconds (an infinite recursive CTE
+  no longer hangs the server) and cuts any text or blob cell over 100000
+  characters.
+- S7: asset rows in a crafted database can no longer overwrite
+  `README.md`, `*.jsonl`, or other non-media files on export; only
+  canonical paths under `media/` are written, checked on the resolved
+  path.
+
+### Fixed
+
+- L1: `arkiv convert <dir>` after MCP `write_record` no longer silently
+  deletes the written records; it refuses and names the export command.
+- L2: reconverting a directory into its existing database rebuilds it
+  from scratch, so collections, README text, and schema descriptions
+  removed from the directory are gone from the database too, and
+  `status` no longer reports `in_sync` over stale content.
+- L3: records with a wrongly typed known field (`"metadata": null` or a
+  list, object or array `content`, list `mimetype`, boolean `content`)
+  no longer crash the import with a traceback or store `"1"`.
+- L4: a high-cardinality key's example is stored apart from its
+  enumerated `values`, so it is no longer written back as a bogus
+  curated `values: [id-0]`; a stale `values` from an earlier export heals
+  on the next convert and export.
+- C1: following the guard's advice (`arkiv convert x.db x`) now clears
+  it; a full db-to-directory export records the directory and resets the
+  unexported-writes counter.
+- C5: a UTF-8 byte order mark no longer drops the first record of a
+  JSONL file, in `parse_jsonl` and in the bundle readers.
+- C6: zip packing no longer fails on a member of 2 GiB or more
+  (`force_zip64`), and `write_bundle` writes atomically, so a failure
+  leaves no partial bundle behind.
+- C7: corrupt, truncated, or encrypted bundles report a clean
+  `ValueError` instead of a traceback (`zlib.error`,
+  `NotImplementedError`, `RuntimeError`, `EOFError`), and `peek_jsonl`
+  returns `None` as documented.
+- C11: `write_bundle` refuses member names that collide after
+  normalization (`a/b`, `a//b`, `./a/b`) instead of writing duplicates.
+- C12: `records_to_jsonl` and `Record.to_json` write non-finite floats as
+  the strings `"nan"`, `"inf"`, `"-inf"` instead of the non-JSON `NaN`.
+- C13: `pack_bundle` builds tar member names as POSIX paths, so they are
+  not backslashed on Windows.
+
+### Changed
+
+- `arkiv convert` into an existing database now rebuilds it from scratch
+  (built in a temp file and moved into place, so a failed build leaves
+  the previous database untouched).
+- It refuses to rebuild over unexported writes, naming the command that
+  exports them first.
+- A full export into a directory (any directory, not only the source
+  archive; not `--since`/`--until`) clears that guard.
+- Exporting from a read-only or locked database now succeeds, with a
+  warning that the unexported-writes guard stays set.
+- `arkiv convert` refuses to replace an existing SQLite file that is not
+  an arkiv database (no `records` table).
+- A rebuilt database keeps the mode of the file it replaces; a new one
+  follows the umask; a symlinked `arkiv.db` stays a symlink.
+- `arkiv query` (and `mcp`) on a directory with no README and no JSONL
+  now errors, as `arkiv convert` already did.
+- Wrongly typed known fields move into `metadata` under their own name
+  instead of failing or being coerced.
+- Hidden (dot-prefixed) files under `media/` are no longer stored in the
+  database, matching what bundles already did.
+- README `contents` paths with `..` are refused even when they stay
+  inside the archive.
+- Bundles are refused on unpack when a member name contains `..`, is
+  absolute, or uses backslashes; when a member is duplicated; when a tar
+  member is a link, special file, or sparse file; and when tar headers
+  are oversized or chained. `write_bundle` refuses the member names that
+  unpack would refuse.
+- MCP `sql_query` has a time limit and a cell-size limit; a cut cell is
+  reported as `cells_truncated`.
+- `get_schema` entries may carry `example` for high-cardinality keys.
+  Older databases are migrated when opened writable and read as `null`
+  when opened read-only.
+- Test coverage now measures the CLI subprocesses (`coverage>=7.10` in
+  the dev extra).
+
 ## [0.4.0] - 2026-10-18
 
 A bundle I/O layer for tools that write and read arkiv archives, so the

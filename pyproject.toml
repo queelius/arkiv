@@ -9,7 +9,7 @@ only-include = ["src", "tests", "examples", "docs", "README.md", "CHANGELOG.md",
 
 [project]
 name = "arkiv"
-version = "0.4.0"
+version = "0.4.1"
 description = "Universal personal data format. JSONL in, SQL out, MCP to LLMs."
 requires-python = ">=3.8"
 license = {text = "MIT"}
