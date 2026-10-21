@@ -124,11 +124,15 @@ def is_source_path(rel: PurePosixPath) -> bool:
 
 
 def _within(child: Path, root: Path) -> bool:
-    """True if ``child`` resolves to a location inside ``root``."""
+    """True if ``child`` resolves to a location inside ``root``.
+
+    Fails closed: a path that cannot be resolved (symlink loop, over-long name,
+    embedded NUL) is not within ``root``.
+    """
     try:
         child.resolve().relative_to(root.resolve())
         return True
-    except ValueError:
+    except (ValueError, OSError, RuntimeError):
         return False
 
 

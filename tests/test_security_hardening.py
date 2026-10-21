@@ -326,3 +326,89 @@ class TestContentsPathsStayInsideArchive:
         db = Database(tmp_path / "x.db")
         assert db.import_readme(archive / "README.md") == 1
         db.close()
+
+
+def _assert_clean_cli_error(r, needle):
+    assert r.returncode == 1, r.stderr
+    assert "Error:" in r.stderr and needle in r.stderr
+    assert "Traceback" not in r.stderr
+
+
+class TestContentsUnresolvablePathsFailClosed:
+    def test_symlink_loop_entry_is_a_clean_error(self, tmp_path):
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        _symlink_or_skip("loop.jsonl", archive / "loop.jsonl")
+        _readme_listing(archive, "loop.jsonl")
+        r = run_arkiv("convert", str(archive))
+        _assert_clean_cli_error(r, "unsafe contents path")
+
+    def test_overlong_name_entry_is_a_clean_error(self, tmp_path):
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        _readme_listing(archive, "a" * 300 + ".jsonl")
+        r = run_arkiv("convert", str(archive))
+        _assert_clean_cli_error(r, "unsafe contents path")
+
+    def test_non_string_entry_rejected(self, tmp_path):
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        _readme_listing(archive, 5)
+        db = Database(tmp_path / "x.db")
+        with pytest.raises(ValueError, match="unsafe contents path"):
+            db.import_readme(archive / "README.md")
+        db.close()
+
+    def test_nul_byte_entry_rejected(self, tmp_path):
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        _readme_listing(archive, '"a\\0b.jsonl"')
+        db = Database(tmp_path / "x.db")
+        with pytest.raises(ValueError, match="unsafe contents path"):
+            db.import_readme(archive / "README.md")
+        db.close()
+
+    def test_empty_entry_is_ignored(self, tmp_path):
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        _readme_listing(archive, "''")
+        db = Database(tmp_path / "x.db")
+        assert db.import_readme(archive / "README.md") == 0
+        db.close()
+
+
+class TestSidecarFilesStayInsideArchive:
+    def test_root_schema_yaml_symlink_escape_rejected(self, tmp_path):
+        outside = tmp_path / "outside-schema.yaml"
+        outside.write_text("c:\n  record_count: 1\n  metadata_keys: {}\n")
+        archive = _make_archive(tmp_path)
+        _symlink_or_skip(outside, archive / "schema.yaml")
+        r = run_arkiv("convert", str(archive))
+        _assert_clean_cli_error(r, "must stay inside the archive")
+
+    def test_nested_readme_symlink_escape_rejected(self, tmp_path):
+        secret = _secret_file(tmp_path)
+        outside = tmp_path / "outside-readme.md"
+        outside.write_text(f"---\ncontents:\n- path: {secret.name}\n---\n")
+        archive = tmp_path / "archive"
+        (archive / "sub").mkdir(parents=True)
+        _readme_listing(archive, "sub/")
+        _symlink_or_skip(outside, archive / "sub" / "README.md")
+        db = Database(tmp_path / "x.db")
+        with pytest.raises(ValueError, match="must stay inside the archive"):
+            db.import_readme(archive / "README.md")
+        db.close()
+
+    def test_nested_schema_yaml_symlink_escape_rejected(self, tmp_path):
+        outside = tmp_path / "outside-schema.yaml"
+        outside.write_text("c:\n  record_count: 1\n  metadata_keys: {}\n")
+        archive = tmp_path / "archive"
+        (archive / "sub").mkdir(parents=True)
+        (archive / "sub" / "c.jsonl").write_text('{"content": "x"}\n')
+        _readme_listing(archive, "sub/")
+        _readme_listing(archive / "sub", "c.jsonl")
+        _symlink_or_skip(outside, archive / "sub" / "schema.yaml")
+        db = Database(tmp_path / "x.db")
+        with pytest.raises(ValueError, match="must stay inside the archive"):
+            db.import_readme(archive / "README.md")
+        db.close()

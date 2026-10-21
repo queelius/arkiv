@@ -53,16 +53,18 @@ def _collection_name_from_path(path: str) -> str:
     return name
 
 
-def _resolve_contents_entry(base_dir: Path, archive_root: Path, raw: str) -> Path:
+def _resolve_contents_entry(base_dir: Path, archive_root: Path, raw: Any) -> Path:
     """Resolve a README ``contents`` entry; refuse any that leave the archive.
 
-    ``raw`` comes from untrusted frontmatter. It must be a relative POSIX path
-    with no ``..`` part and no backslash, and the joined path must still resolve
-    (following symlinks) inside ``archive_root``. Otherwise a hostile archive
-    could pull any readable ``.jsonl`` on the machine into the database.
+    ``raw`` comes from untrusted frontmatter, so it may not even be a string.
+    It must be a relative POSIX path with no ``..`` part, backslash or NUL, and
+    the joined path must still resolve (following symlinks) inside
+    ``archive_root``. Otherwise a hostile archive could pull any readable
+    ``.jsonl`` on the machine into the database. Paths the filesystem cannot
+    resolve (symlink loops, over-long names) fail closed as unsafe too.
     """
     unsafe = ValueError(f"unsafe contents path (must stay inside the archive): {raw!r}")
-    if not isinstance(raw, str) or "\\" in raw:
+    if not isinstance(raw, str) or "\\" in raw or "\0" in raw:
         raise unsafe
     posix = PurePosixPath(raw)
     if posix.is_absolute() or ".." in posix.parts:
@@ -70,7 +72,22 @@ def _resolve_contents_entry(base_dir: Path, archive_root: Path, raw: str) -> Pat
     entry = base_dir / raw
     if not _within(entry, archive_root):
         raise unsafe
+    try:
+        # Callers probe the entry next; surface a probe failure here as unsafe
+        # instead of letting an OSError escape as a traceback.
+        entry.exists()
+    except (OSError, RuntimeError):
+        raise unsafe
     return entry
+
+
+def _require_inside(path: Path, archive_root: Path) -> None:
+    """Refuse a README or schema file that resolves outside the archive."""
+    if not _within(path, archive_root):
+        raise ValueError(
+            "unsafe archive file path (must stay inside the archive): "
+            f"{path.name!r} in {path.parent.name!r}"
+        )
 
 
 def _validate_collection_name(name):
@@ -826,6 +843,7 @@ class Database:
             if entry_path.is_dir():
                 sub_readme = entry_path / "README.md"
                 if sub_readme.exists():
+                    _require_inside(sub_readme, base_dir)
                     total += self._import_nested_readme(sub_readme, seen, base_dir)
             elif entry_path.suffix == ".jsonl" and entry_path.exists():
                 total += self._import_collection_checked(entry_path, seen, base_dir)
@@ -833,6 +851,7 @@ class Database:
         # Merge curated schema if schema.yaml exists
         schema_yaml_path = base_dir / "schema.yaml"
         if schema_yaml_path.exists():
+            _require_inside(schema_yaml_path, base_dir)
             curated = load_schema_yaml(schema_yaml_path)
             for coll_name, coll_schema in curated.items():
                 self.merge_curated_schema(coll_name, coll_schema.metadata_keys)
@@ -901,6 +920,7 @@ class Database:
         # Merge per-collection schema.yaml if present
         schema_yaml_path = base_dir / "schema.yaml"
         if schema_yaml_path.exists():
+            _require_inside(schema_yaml_path, archive_root)
             curated = load_schema_yaml(schema_yaml_path)
             for coll_name, coll_schema in curated.items():
                 self.merge_curated_schema(coll_name, coll_schema.metadata_keys)
