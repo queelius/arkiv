@@ -8,6 +8,7 @@ build/
 .eggs/
 *.so
 .coverage
+.coverage.*
 htmlcov/
 .mypy_cache/
 .pytest_cache/

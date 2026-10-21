@@ -40,6 +40,7 @@ mcp = ["mcp[cli]"]
 dev = [
     "pytest",
     "pytest-cov",
+    "coverage>=7.10; python_version >= '3.9'",
     "black",
     "flake8",
     "mypy",

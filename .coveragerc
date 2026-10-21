@@ -1,6 +1,10 @@
 [run]
 source = src/arkiv
 omit = src/arkiv/__pycache__/*
+# Tests run the CLI as a subprocess (python -m arkiv.cli); measure those too.
+# Each process writes its own .coverage.* file, which pytest-cov combines.
+patch = subprocess
+parallel = true
 
 [report]
 exclude_lines =
