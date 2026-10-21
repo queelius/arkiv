@@ -49,6 +49,8 @@ Each line in a JSONL file is one record. A record is a JSON object with these co
 
 These five fields are the **known fields**. Any other top-level key is an **unknown field** -- implementations SHOULD merge unknown fields into `metadata` on import, preserving the original data while normalizing the structure. If an unknown top-level field collides with a key already present inside `metadata`, the explicit `metadata` value wins (the structured value is authoritative and is not clobbered by a stray top-level field of the same name).
 
+A known field with a value of the wrong type (a `metadata` that is not an object, or a `mimetype`, `uri`, `content`, or `timestamp` that is not a string) is treated as an unknown field and moved into `metadata` under its own name. A `null` known field is the same as an absent one.
+
 ### Content encoding
 
 The `content` field holds inline text. It is always a UTF-8 string. arkiv does not specify a convention for binary content encoding; use `uri` to reference binary resources instead.

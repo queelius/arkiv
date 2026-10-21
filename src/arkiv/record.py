@@ -7,9 +7,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Tuple, Union
 
 
-KNOWN_FIELDS = {"mimetype", "uri", "content", "timestamp", "metadata"}
-
-
 def normalize_timestamp(ts: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """Normalize a zoned ISO 8601 timestamp to canonical UTC.
 
@@ -72,29 +69,52 @@ class Record:
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
 
+KNOWN_FIELDS = {f.name for f in fields(Record)}
+
+# The known fields that must be strings: every Record field but ``metadata``.
+_STRING_FIELDS = tuple(f.name for f in fields(Record) if f.name != "metadata")
+
+
 def parse_record(data: Dict[str, Any]) -> Record:
     """Parse a dict into a Record.
 
     Known fields (mimetype, uri, content, timestamp, metadata) are
     extracted. Unknown fields are merged into metadata, but an explicit
-    ``metadata`` key wins over a colliding top-level field: the structured
-    value is authoritative and is never silently clobbered by a stray field
-    of the same name. (Use ``arkiv detect`` to surface such collisions.)
+    ``metadata`` object wins over a colliding top-level field: the
+    structured value is authoritative and is never silently clobbered by a
+    stray field of the same name. (Use ``arkiv detect`` to surface such
+    collisions.)
+
+    Input is permissive: a known field with the wrong type is kept, never
+    fatal. A ``null`` known field is the same as an absent one. A
+    ``metadata`` that is not an object, or a string field (mimetype, uri,
+    content, timestamp) that is not a string, is treated as an unknown
+    field: it is moved into metadata under its own name and the record
+    field is left ``None``. The same precedence applies to these moved
+    fields.
     """
-    metadata = dict(data["metadata"]) if "metadata" in data else None
+    explicit: Dict[str, Any] = {}
+    extra: Dict[str, Any] = {}
+    raw_metadata = data.get("metadata")
+    if isinstance(raw_metadata, dict):
+        explicit = dict(raw_metadata)
+    elif raw_metadata is not None:
+        extra["metadata"] = raw_metadata
 
-    # Collect unknown fields into metadata; metadata keys take precedence.
+    strings: Dict[str, Optional[str]] = {}
+    for name in _STRING_FIELDS:
+        value = data.get(name)
+        if value is None or isinstance(value, str):
+            strings[name] = value
+        else:
+            strings[name] = None
+            extra[name] = value
+
+    # Collect unknown fields too; explicit metadata keys take precedence.
     unknown = {k: v for k, v in data.items() if k not in KNOWN_FIELDS}
-    if unknown:
-        metadata = {**unknown, **(metadata or {})}
+    metadata = {**unknown, **extra, **explicit}
 
-    return Record(
-        mimetype=data.get("mimetype"),
-        uri=data.get("uri"),
-        content=data.get("content"),
-        timestamp=data.get("timestamp"),
-        metadata=metadata or None,
-    )
+    return Record(metadata=metadata or None, **strings)
 
 
 def parse_jsonl(path: Union[str, Path]) -> Iterator[Record]:

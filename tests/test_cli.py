@@ -1019,3 +1019,33 @@ def test_convert_into_missing_output_directory_errors(tmp_path):
     assert r.returncode == 1
     assert f"Output directory does not exist: {missing}" in r.stderr
     assert ".arkiv-" not in r.stderr
+
+
+def test_convert_tolerates_wrongly_typed_fields(tmp_path):
+    shapes = [
+        {"metadata": None},
+        {"metadata": [1, 2]},
+        {"content": {"a": 1}},
+        {"content": True},
+        {"mimetype": ["x"]},
+        {"timestamp": 1700000000},
+        {"content": {"a": 1}, "metadata": {"content": "keep"}},
+        {"content": "ok", "metadata": {"k": 1}},
+    ]
+    src = tmp_path / "x.jsonl"
+    src.write_text("".join(json.dumps(s) + "\n" for s in shapes))
+    out = tmp_path / "x.db"
+    r = run_arkiv("convert", str(src), str(out))
+    assert r.returncode == 0, r.stderr
+    assert "(8 records)" in r.stdout
+    from arkiv.database import Database
+
+    db = Database(out, read_only=True)
+    try:
+        rows = db.query(
+            "SELECT metadata FROM records WHERE json_extract(metadata, '$.timestamp')"
+            " = 1700000000"
+        )
+    finally:
+        db.close()
+    assert len(rows) == 1

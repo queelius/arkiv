@@ -111,6 +111,32 @@ class TestParseRecord:
         assert r.metadata["other"] == "x"
 
 
+@pytest.mark.parametrize(
+    "data, expected",
+    [
+        ({"metadata": None}, Record()),
+        ({"metadata": [1, 2]}, Record(metadata={"metadata": [1, 2]})),
+        ({"content": {"a": 1}}, Record(metadata={"content": {"a": 1}})),
+        ({"content": True}, Record(metadata={"content": True})),
+        ({"mimetype": ["x"]}, Record(metadata={"mimetype": ["x"]})),
+        (
+            {"timestamp": 1700000000},
+            Record(metadata={"timestamp": 1700000000}),
+        ),
+        (
+            {"content": {"a": 1}, "metadata": {"content": "keep"}},
+            Record(metadata={"content": "keep"}),
+        ),
+        (
+            {"content": "ok", "metadata": {"k": 1}},
+            Record(content="ok", metadata={"k": 1}),
+        ),
+    ],
+)
+def test_parse_record_wrong_types(data, expected):
+    assert parse_record(data) == expected
+
+
 class TestParseJsonl:
     def test_parse_lines(self, tmp_path):
         f = tmp_path / "test.jsonl"
