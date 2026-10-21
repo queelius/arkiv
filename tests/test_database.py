@@ -237,6 +237,22 @@ class TestQueryGuard:
             db.query("DROP TABLE records")
         db.close()
 
+    @pytest.mark.parametrize(
+        "name", ["notes#1.db", "q?x.db", "100%.db", "spa ce.db", "ünï.db"]
+    )
+    def test_read_only_open_with_uri_metacharacters(self, tmp_path, name):
+        f = tmp_path / "test.jsonl"
+        f.write_text('{"content": "hello"}\n')
+        db = Database(tmp_path / name)
+        db.import_jsonl(f, collection="test")
+        db.close()
+
+        before = sorted(p.name for p in tmp_path.iterdir())
+        db = Database(tmp_path / name, read_only=True)
+        assert db.query("SELECT count(*) AS n FROM records") == [{"n": 1}]
+        db.close()
+        assert sorted(p.name for p in tmp_path.iterdir()) == before
+
     def test_comment_injection_blocked(self, tmp_path):
         """Authorizer blocks write attempts even with SQL comment prefix."""
         f = tmp_path / "test.jsonl"

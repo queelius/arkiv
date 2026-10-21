@@ -111,7 +111,7 @@ class Database:
             if not self.path.exists():
                 raise FileNotFoundError(f"Database not found: {self.path}")
             self.conn = sqlite3.connect(
-                f"file:{self.path}?mode=ro", uri=True
+                self.path.resolve().as_uri() + "?mode=ro", uri=True
             )
         else:
             self.conn = sqlite3.connect(str(self.path))
