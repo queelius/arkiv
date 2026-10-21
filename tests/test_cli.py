@@ -736,3 +736,141 @@ class TestAutoDbFreshness:
         run_arkiv("query", str(d), "SELECT content FROM records")
         mtime2 = (d / "arkiv.db").stat().st_mtime
         assert mtime1 == mtime2
+
+
+# --- Rebuilds from scratch, never over unexported writes (L1, L2, C1) ---
+
+
+def contents_of(db_path):
+    from arkiv.database import Database
+
+    db = Database(db_path, read_only=True)
+    try:
+        return [r["content"] for r in db.query("SELECT content FROM records")]
+    finally:
+        db.close()
+
+
+def collections_of(db_path):
+    from arkiv.database import Database
+
+    db = Database(db_path, read_only=True)
+    try:
+        rows = db.query("SELECT DISTINCT collection FROM records ORDER BY collection")
+        return [r["collection"] for r in rows]
+    finally:
+        db.close()
+
+
+def _converted_archive_with_write(tmp_path):
+    from arkiv.database import Database
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    (archive / "c.jsonl").write_text('{"content": "original"}\n')
+    (archive / "README.md").write_text("---\ncontents:\n- path: c.jsonl\n---\n")
+    assert run_arkiv("convert", str(archive)).returncode == 0
+    db = Database(archive / "arkiv.db")
+    db.insert_record("c", "written")
+    db.close()
+    return archive
+
+
+def test_convert_dir_refuses_unexported_writes(tmp_path):
+    archive = _converted_archive_with_write(tmp_path)
+    r = run_arkiv("convert", str(archive))
+    assert r.returncode == 1 and "unexported write" in r.stderr
+    assert f"arkiv convert {archive / 'arkiv.db'} <directory>" in r.stderr
+    assert "written" in contents_of(archive / "arkiv.db")
+
+
+def test_export_into_directory_clears_unexported_writes(tmp_path):
+    archive = _converted_archive_with_write(tmp_path)
+    r = run_arkiv("convert", str(archive / "arkiv.db"), str(archive))
+    assert r.returncode == 0, r.stderr
+    r = run_arkiv("convert", str(archive))
+    assert r.returncode == 0, r.stderr
+    assert "written" in contents_of(archive / "arkiv.db")
+
+
+def test_sliced_export_keeps_unexported_guard(tmp_path):
+    archive = _converted_archive_with_write(tmp_path)
+    r = run_arkiv(
+        "convert",
+        str(archive / "arkiv.db"),
+        str(tmp_path / "slice"),
+        "--since",
+        "2000-01-01",
+    )
+    assert r.returncode == 0, r.stderr
+    r = run_arkiv("convert", str(archive))
+    assert r.returncode == 1 and "unexported write" in r.stderr
+
+
+def test_bundle_export_keeps_unexported_guard(tmp_path):
+    archive = _converted_archive_with_write(tmp_path)
+    r = run_arkiv("convert", str(archive / "arkiv.db"), str(tmp_path / "out.zip"))
+    assert r.returncode == 0, r.stderr
+    r = run_arkiv("convert", str(archive))
+    assert r.returncode == 1 and "unexported write" in r.stderr
+
+
+def test_convert_jsonl_refuses_unexported_writes(tmp_path):
+    archive = _converted_archive_with_write(tmp_path)
+    r = run_arkiv("convert", str(archive / "c.jsonl"), str(archive / "arkiv.db"))
+    assert r.returncode == 1 and "unexported write" in r.stderr
+    assert "written" in contents_of(archive / "arkiv.db")
+
+
+def test_failed_rebuild_keeps_previous_database(tmp_path):
+    from arkiv.database import build_database
+
+    archive = tmp_path / "archive"
+    (archive / "sub").mkdir(parents=True)
+    (archive / "a.jsonl").write_text('{"content": "top"}\n')
+    (archive / "b.jsonl").write_text('{"content": "bee"}\n')
+    (archive / "sub" / "a.jsonl").write_text('{"content": "nested"}\n')
+    (archive / "README.md").write_text(
+        "---\ncontents:\n- path: a.jsonl\n- path: b.jsonl\n---\n"
+    )
+    assert run_arkiv("convert", str(archive)).returncode == 0
+    original_collections = collections_of(archive / "arkiv.db")
+    assert original_collections == ["a", "b"]
+
+    (archive / "README.md").write_text(
+        "---\ncontents:\n- path: a.jsonl\n- path: sub/a.jsonl\n---\n"
+    )
+    with pytest.raises(ValueError, match="collision"):
+        build_database(archive, archive / "arkiv.db", fingerprint=True)
+    assert collections_of(archive / "arkiv.db") == original_collections
+    assert not list(archive.glob(".arkiv-*"))
+
+
+def test_query_on_empty_directory_errors(tmp_path):
+    (tmp_path / "empty").mkdir()
+    r = run_arkiv("query", str(tmp_path / "empty"), "SELECT 1")
+    assert r.returncode == 1 and "no README.md and no .jsonl" in r.stderr
+    assert not (tmp_path / "empty" / "arkiv.db").exists()
+
+
+def test_refuse_unexported_writes_on_non_database(tmp_path):
+    from arkiv.database import refuse_unexported_writes
+
+    bogus = tmp_path / "bogus.db"
+    bogus.write_text("this is not sqlite")
+    with pytest.raises(ValueError):
+        refuse_unexported_writes(bogus)
+
+
+def test_refuse_unexported_writes_without_metadata_table(tmp_path):
+    import sqlite3
+
+    from arkiv.database import refuse_unexported_writes
+
+    old = tmp_path / "old.db"
+    conn = sqlite3.connect(str(old))
+    conn.execute("CREATE TABLE records (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    refuse_unexported_writes(old)  # missing counter counts as 0
+    refuse_unexported_writes(tmp_path / "missing.db")  # absent db: nothing to lose

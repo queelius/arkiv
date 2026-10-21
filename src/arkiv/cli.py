@@ -58,7 +58,7 @@ def cmd_convert(args):
     import tempfile
 
     from .bundle import is_bundle, pack_bundle, unpack_bundle
-    from .database import Database
+    from .database import Database, build_database, refuse_unexported_writes
 
     input_path = Path(args.input)
 
@@ -88,6 +88,15 @@ def cmd_convert(args):
             db.export(output, nested=nested, since=since, until=until)
         finally:
             db.close()
+        if not (since or until):
+            # A full export means every write now exists in a directory form,
+            # so a later rebuild loses nothing: record that directory and
+            # reset the unexported-writes counter.
+            db = Database(input_path)
+            try:
+                db.store_source_fingerprint(output)
+            finally:
+                db.close()
         print(f"Converted {input_path.name} → {output}")
         return
 
@@ -120,58 +129,25 @@ def cmd_convert(args):
     if is_bundle(input_path):
         with tempfile.TemporaryDirectory(prefix="arkiv-unpack-") as tmp:
             unpack_bundle(input_path, Path(tmp))
-            db = Database(output)
-            try:
-                readme = Path(tmp) / "README.md"
-                if readme.exists():
-                    count = db.import_readme(readme)
-                else:
-                    count = sum(
-                        db.import_jsonl(j)
-                        for j in sorted(Path(tmp).glob("*.jsonl"))
-                    )
-                    db.import_assets(Path(tmp))
-            finally:
-                db.close()
+            count = build_database(Path(tmp), output, fingerprint=False)
         print(f"Converted {input_path.name} → {output} ({count} records)")
         return
 
     # Directory input
     if input_path.is_dir():
-        readme = input_path / "README.md"
-        db = Database(output)
-        try:
-            if readme.exists():
-                count = db.import_readme(readme)
-            else:
-                count = sum(
-                    db.import_jsonl(j)
-                    for j in sorted(input_path.glob("*.jsonl"))
-                )
-                if count == 0:
-                    raise ValueError(
-                        f"Directory has no README.md and no .jsonl files: "
-                        f"{input_path}"
-                    )
-                db.import_assets(input_path)
-            # Record a fingerprint so `arkiv status` can detect later drift.
-            db.store_source_fingerprint(input_path)
-        finally:
-            db.close()
+        # Record a fingerprint so `arkiv status` can detect later drift.
+        count = build_database(input_path, output, fingerprint=True)
         print(f"Converted {input_path} → {output} ({count} records)")
         return
 
     # Single file: README.md or JSONL
     if input_path.suffix == ".md":
-        db = Database(output)
-        try:
-            count = db.import_readme(input_path)
-        finally:
-            db.close()
+        count = build_database(input_path, output, fingerprint=False)
         print(f"Converted {input_path.name} → {output} ({count} records)")
         return
 
-    # Treat as JSONL
+    # Treat as JSONL: replaces only its own collection in the database.
+    refuse_unexported_writes(output)
     db = Database(output)
     try:
         count = db.import_jsonl(input_path)
@@ -214,7 +190,7 @@ def _resolve_db(path_str, writable=False):
     archive.db`` to go straight to a database).
     """
     from .bundle import is_bundle
-    from .database import Database
+    from .database import Database, build_database
 
     path = Path(path_str)
 
@@ -228,37 +204,11 @@ def _resolve_db(path_str, writable=False):
 
     if path.is_dir():
         db_path = path / "arkiv.db"
-        if db_path.exists() and _source_changed_since(path, db_path):
-            # The authoritative directory changed since this cache was built.
-            # Rebuild so reads never return stale records, BUT refuse to
-            # destroy a database that holds unexported --writable writes.
-            probe = Database(db_path, read_only=True)
-            try:
-                pending = probe.get_unexported_writes()
-            finally:
-                probe.close()
-            if pending:
-                raise ValueError(
-                    f"{path}: the directory changed but its arkiv.db has "
-                    f"{pending} unexported write(s). Export them first with "
-                    f"`arkiv convert {db_path} {path}`, or delete {db_path} "
-                    f"to discard them, then retry."
-                )
-            db_path.unlink()
-        if not db_path.exists():
-            db = Database(db_path)
-            readme = path / "README.md"
-            if readme.exists():
-                db.import_readme(readme)
-            else:
-                for jsonl in sorted(path.glob("*.jsonl")):
-                    db.import_jsonl(jsonl)
-                db.import_assets(path)
-            db.store_source_fingerprint(path)
-            if not writable:
-                db.close()
-                return Database(db_path, read_only=True)
-            return db
+        if not db_path.exists() or _source_changed_since(path, db_path):
+            # Missing, or the authoritative directory changed since this cache
+            # was built: rebuild so reads never return stale records.
+            # build_database refuses to destroy unexported --writable writes.
+            build_database(path, db_path, fingerprint=True)
         return Database(db_path, read_only=not writable)
     elif path.suffix == ".jsonl":
         db_path = path.with_suffix(".db")

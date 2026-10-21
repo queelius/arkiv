@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import os
 import sqlite3
+import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Union
@@ -855,6 +857,32 @@ class Database:
         self.conn.commit()
         return count
 
+    def import_directory(self, source_dir: Union[str, Path]) -> int:
+        """Import a whole archive directory into this database.
+
+        Uses ``README.md`` when the directory has one. Otherwise every
+        root-level ``*.jsonl`` source file is imported as its own collection,
+        in sorted order, followed by the ``media/`` subtree. Raises
+        ``ValueError`` when the directory has neither. Returns the number of
+        records imported.
+        """
+        source_dir = Path(source_dir)
+        readme = source_dir / "README.md"
+        if readme.exists():
+            return self.import_readme(readme)
+        jsonls = sorted(
+            (rel, path)
+            for rel, path in iter_source_files(source_dir)
+            if "/" not in rel and rel.endswith(".jsonl")
+        )
+        if not jsonls:
+            raise ValueError(
+                f"Directory has no README.md and no .jsonl files: {source_dir}"
+            )
+        count = sum(self.import_jsonl(path) for _rel, path in jsonls)
+        self.import_assets(source_dir)
+        return count
+
     def import_readme(self, readme_path: Union[str, Path]) -> int:
         """Import all collections described in a README.md.
 
@@ -976,3 +1004,78 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+
+
+def refuse_unexported_writes(db_path: Union[str, Path]) -> None:
+    """Refuse to replace a database that holds unexported writes.
+
+    Records added through ``insert_record`` (the MCP ``write_record`` tool)
+    exist only in the database form until it is exported into a directory.
+    Rebuilding the database from its directory would silently destroy them,
+    so raise a ``ValueError`` naming the export command instead. A missing
+    database has nothing to lose; one from an older arkiv without the
+    counter counts as zero writes.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return
+    try:
+        db = Database(db_path, read_only=True)
+        try:
+            pending = db.get_unexported_writes()
+        finally:
+            db.close()
+    except sqlite3.DatabaseError as e:
+        raise ValueError(f"{db_path} is not a readable arkiv database: {e}")
+    if pending > 0:
+        raise ValueError(
+            f"{db_path} holds {pending} unexported write(s) that a rebuild "
+            f"would destroy. Export them first with "
+            f"`arkiv convert {db_path} <directory>`, or delete {db_path} to "
+            f"discard them, then retry."
+        )
+
+
+def build_database(
+    source: Union[str, Path], output: Union[str, Path], *, fingerprint: bool
+) -> int:
+    """Build ``output`` from scratch from a directory or a ``README.md``.
+
+    The database is populated in a dot-prefixed temp file beside ``output``
+    (so no source walk or fingerprint ever sees it) and atomically moved over
+    ``output`` only once the import succeeded. A failed build leaves any
+    previous ``output`` untouched and no temp file behind. Because nothing
+    from the old database survives, collections, README text and schema
+    descriptions removed from the directory are gone from the result too.
+    Refuses (via :func:`refuse_unexported_writes`) to replace a database
+    holding unexported writes. With ``fingerprint``, records the source
+    directory's fingerprint so ``arkiv status`` can detect later drift.
+    Returns the number of records imported.
+    """
+    source = Path(source)
+    output = Path(output)
+    refuse_unexported_writes(output)
+    fd, tmp_name = tempfile.mkstemp(dir=output.parent, prefix=".arkiv-", suffix=".db")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        db = Database(tmp)
+        try:
+            if source.is_dir():
+                directory = source
+                count = db.import_directory(source)
+            else:
+                directory = source.parent
+                count = db.import_readme(source)
+            if fingerprint:
+                db.store_source_fingerprint(directory)
+        finally:
+            db.close()
+        os.replace(tmp, output)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return count

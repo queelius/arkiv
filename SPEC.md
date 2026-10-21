@@ -446,7 +446,7 @@ Runs a read-only SQL query. Use `metadata->>'key'` or `json_extract(metadata, '$
 **Returns:** JSON object with the inserted record's `id`, `collection`, and `timestamp`.
 
 **Notes:**
-- The schema (`_schema` table) is NOT recomputed per write. It reflects the state at last conversion. Use `arkiv convert` to refresh the schema after bulk writes.
+- The schema (`_schema` table) is NOT recomputed per write. It reflects the state at last conversion. To refresh the schema after writes, first export the database into its directory (`arkiv convert archive/arkiv.db archive`), then convert again, or call `Database.refresh_schema()`. `arkiv convert` refuses to rebuild a database that holds unexported writes.
 - Collection names are validated (no path separators, no leading dot, no OS-reserved names).
 - Use `--writable` sparingly: the read-only default is the recommended deployment mode.
 
