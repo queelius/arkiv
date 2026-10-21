@@ -489,3 +489,24 @@ class TestSchemaExample:
         keys = _keys(_reconvert(out, tmp_path / "out2"))
         assert keys["id"]["values"] == ["a"]
         assert keys["id"]["description"] == "curated"
+
+
+class TestNonFiniteExport:
+    """C12: a NaN that entered through insert_record is exported as a
+    string, so the JSONL stays strict JSON."""
+
+    def test_export_writes_strict_json(self, tmp_path):
+        db = Database(tmp_path / "x.db")
+        db.insert_record("c", "hello", metadata={"v": float("nan"), "w": [float("inf")]})
+        out = tmp_path / "out"
+        db.export(out)
+        db.close()
+
+        def reject(name):
+            raise AssertionError(f"non-standard JSON constant {name}")
+
+        line = (out / "c.jsonl").read_text().strip()
+        assert json.loads(line, parse_constant=reject)["metadata"] == {
+            "v": "nan",
+            "w": ["inf"],
+        }

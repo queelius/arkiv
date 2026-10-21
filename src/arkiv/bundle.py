@@ -25,6 +25,8 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import os
+import secrets
 import shutil
 import tarfile
 import zipfile
@@ -44,6 +46,7 @@ from typing import (
     Union,
 )
 
+from .record import _json_safe
 
 PathLike = Union[str, Path]
 
@@ -338,6 +341,24 @@ def _open_tar_gz_for_write(output: Path) -> Iterator[tarfile.TarFile]:
                 yield tf
 
 
+@contextmanager
+def _atomic_output(path: Path) -> Iterator[Path]:
+    """Yield a temporary file beside *path* to write to; on success it
+    replaces *path* in one step, and on any exception it is removed, so a
+    failed write never leaves a partial bundle (nor damages an existing
+    one). The temp name never reaches the archive bytes."""
+    tmp = path.parent / f".{path.name}.{secrets.token_hex(4)}.tmp"
+    try:
+        yield tmp
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _check_member_name(name: str) -> str:
     """Reject member names that are absolute or climb out of the archive."""
     p = PurePosixPath(name)
@@ -359,7 +380,13 @@ def write_bundle(path: PathLike, members: Mapping[str, bytes]) -> None:
     fmt = bundle_format(path)
     if fmt not in ("dir", "zip", "tar.gz"):
         raise ValueError(f"write_bundle: cannot write a bundle as {fmt!r}: {path!s}")
-    named = sorted((_check_member_name(n), data) for n, data in members.items())
+    unique: Dict[str, bytes] = {}
+    for n, data in members.items():
+        key = _check_member_name(n)
+        if key in unique:
+            raise ValueError(f"duplicate bundle member name after normalization: {n!r}")
+        unique[key] = data
+    named = sorted(unique.items())
     if fmt == "dir":
         for name, data in named:
             dest = path / name
@@ -371,24 +398,28 @@ def write_bundle(path: PathLike, members: Mapping[str, bytes]) -> None:
             dest.write_bytes(data)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    if fmt == "zip":
-        with zipfile.ZipFile(path, "w") as zf:
-            for name, data in named:
-                zf.writestr(_zip_info(name), data)
-    else:
-        with _open_tar_gz_for_write(path) as tf:
-            for name, data in named:
-                tf.addfile(_tar_info(name, len(data)), io.BytesIO(data))
+    with _atomic_output(path) as tmp:
+        if fmt == "zip":
+            with zipfile.ZipFile(tmp, "w") as zf:
+                for name, data in named:
+                    zf.writestr(_zip_info(name), data)
+        else:
+            with _open_tar_gz_for_write(tmp) as tf:
+                for name, data in named:
+                    tf.addfile(_tar_info(name, len(data)), io.BytesIO(data))
 
 
 def records_to_jsonl(records: Iterable[Mapping[str, Any]]) -> bytes:
     """Serialize records as UTF-8 JSONL, one object per line.
 
     Non-ASCII text is kept as is, and values JSON cannot represent
-    (datetimes, Decimals, ...) are written via ``str``.
+    (datetimes, Decimals, ...) are written via ``str``, as are NaN and
+    infinite floats, so the output is always strict JSON.
     """
     return "".join(
-        json.dumps(rec, ensure_ascii=False, default=str) + "\n" for rec in records
+        json.dumps(_json_safe(rec), ensure_ascii=False, default=str, allow_nan=False)
+        + "\n"
+        for rec in records
     ).encode("utf-8")
 
 
@@ -542,16 +573,21 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
         for rel, p in iter_source_files(directory):
             yield p, rel
 
-    if fmt == "zip":
-        with zipfile.ZipFile(output, "w") as zf:
-            for p, arcname in _members():
-                with open(p, "rb") as src, zf.open(_zip_info(arcname), "w") as dst:
-                    shutil.copyfileobj(src, dst)
-    else:  # tar.gz
-        with _open_tar_gz_for_write(output) as tf:
-            for p, arcname in _members():
-                with open(p, "rb") as src:
-                    tf.addfile(_tar_info(arcname, p.stat().st_size), src)
+    with _atomic_output(output) as tmp:
+        if fmt == "zip":
+            with zipfile.ZipFile(tmp, "w") as zf:
+                for p, arcname in _members():
+                    info = _zip_info(arcname)
+                    # zipfile streams a member of unknown size as non-zip64;
+                    # declaring it up front lets it switch to zip64 over 2 GiB.
+                    info.file_size = p.stat().st_size
+                    with open(p, "rb") as src, zf.open(info, "w") as dst:
+                        shutil.copyfileobj(src, dst)
+        else:  # tar.gz
+            with _open_tar_gz_for_write(tmp) as tf:
+                for p, arcname in _members():
+                    with open(p, "rb") as src:
+                        tf.addfile(_tar_info(arcname, p.stat().st_size), src)
 
 
 # Bundles may come from untrusted sources, so extraction is bounded to

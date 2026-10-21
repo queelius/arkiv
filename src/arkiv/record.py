@@ -1,6 +1,7 @@
 """Universal record format."""
 
 import json
+import math
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +44,24 @@ def normalize_timestamp(ts: Optional[str]) -> Tuple[Optional[str], Optional[str]
     return canonical, ts
 
 
+def _json_safe(value: Any) -> Any:
+    """A copy of *value* that strict JSON can represent.
+
+    Every non-finite float (``nan``, ``inf``, ``-inf``) inside dicts, lists,
+    and tuples is replaced by ``str(value)``: ``json.dumps`` would otherwise
+    write the non-standard ``NaN``/``Infinity`` tokens, which strict readers
+    (JavaScript's ``JSON.parse``, jq, most other languages) reject. Callers
+    serialize the result with ``allow_nan=False`` so nothing slips through.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 @dataclass
 class Record:
     """A single arkiv record.
@@ -66,7 +85,9 @@ class Record:
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
-        return json.dumps(self.to_dict(), ensure_ascii=False)
+        return json.dumps(
+            _json_safe(self.to_dict()), ensure_ascii=False, allow_nan=False
+        )
 
 
 KNOWN_FIELDS = {f.name for f in fields(Record)}

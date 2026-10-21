@@ -167,3 +167,20 @@ def test_parse_jsonl_keeps_first_record_after_bom(tmp_path):
     p = tmp_path / "bom.jsonl"
     p.write_bytes(b'\xef\xbb\xbf{"content":"first"}\n{"content":"second"}\n')
     assert [r.content for r in parse_jsonl(p)] == ["first", "second"]
+
+
+def _reject_constant(name):
+    raise AssertionError(f"non-standard JSON constant {name}")
+
+
+def test_record_to_json_non_finite_floats():
+    text = Record(metadata={"v": float("-inf"), "l": [float("nan")]}).to_json()
+    assert json.loads(text, parse_constant=_reject_constant) == {
+        "metadata": {"v": "-inf", "l": ["nan"]}
+    }
+
+
+def test_record_to_json_leaves_the_record_untouched():
+    rec = Record(metadata={"v": float("nan")})
+    rec.to_json()
+    assert rec.metadata["v"] != rec.metadata["v"]  # still a NaN float

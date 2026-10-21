@@ -14,6 +14,7 @@ import zipfile
 
 import pytest
 
+from arkiv import bundle
 from arkiv import (
     bundle_format,
     iter_jsonl,
@@ -611,3 +612,114 @@ class TestUnreadableMembers:
         out.write_bytes(bytes(data))
         with pytest.raises(ValueError):
             list(iter_jsonl(out))
+
+
+def _reject_constant(name):
+    raise AssertionError(f"non-standard JSON constant {name}")
+
+
+def _archive(tmp_path, big=b"x" * 4096):
+    archive = tmp_path / "archive"
+    (archive / "media").mkdir(parents=True)
+    (archive / "README.md").write_text("---\nname: t\n---\n")
+    (archive / "media" / "big.bin").write_bytes(big)
+    return archive
+
+
+class TestAtomicAndZip64Packing:
+    def test_pack_bundle_large_member_uses_zip64(self, tmp_path, monkeypatch):
+        # Shrink the zip64 threshold so a 4 KiB member stands in for 2 GiB.
+        monkeypatch.setattr(zipfile, "ZIP64_LIMIT", 1024)
+        data = bytes(range(256)) * 16
+        out = tmp_path / "out.zip"
+        pack_bundle(_archive(tmp_path, data), out)
+        with zipfile.ZipFile(out) as zf:
+            assert zf.read("media/big.bin") == data
+            assert zf.getinfo("media/big.bin").extract_version >= 45  # zip64
+
+    @pytest.mark.parametrize("ext", [".zip", ".tar.gz"])
+    def test_failed_pack_leaves_no_partial_output(self, tmp_path, monkeypatch, ext):
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(bundle.shutil, "copyfileobj", boom)
+        monkeypatch.setattr(bundle.tarfile.TarFile, "addfile", boom)
+        out = tmp_path / f"out{ext}"
+        with pytest.raises(OSError):
+            pack_bundle(_archive(tmp_path), out)
+        assert not out.exists()
+        assert not list(tmp_path.glob(".out*"))
+
+    @pytest.mark.parametrize("ext", [".zip", ".tar.gz"])
+    def test_failed_write_keeps_the_previous_bundle(self, tmp_path, ext):
+        out = tmp_path / f"out{ext}"
+        write_bundle(out, {"a.txt": b"old"})
+        before = out.read_bytes()
+
+        class Unwritable:
+            def __len__(self):
+                return 1
+
+        with pytest.raises(Exception):
+            write_bundle(out, {"a.txt": b"new", "b.txt": Unwritable()})  # type: ignore
+        assert out.read_bytes() == before
+        assert not list(tmp_path.glob(".out*"))
+
+    @pytest.mark.parametrize("ext", [".zip", ".tar.gz"])
+    def test_temp_name_does_not_leak_into_the_archive(self, tmp_path, ext):
+        a, b = tmp_path / f"a{ext}", tmp_path / f"b{ext}"
+        write_bundle(a, {"a.txt": b"1"})
+        write_bundle(b, {"a.txt": b"1"})
+        # Only the member names are in the bytes, never the output or temp name.
+        assert a.read_bytes() == b.read_bytes()
+        assert b".tmp" not in a.read_bytes()
+        assert not any(p.name.startswith(".") for p in tmp_path.iterdir())
+
+    def test_atomic_output_replaces_on_success_and_cleans_on_error(self, tmp_path):
+        target = tmp_path / "t.bin"
+        with bundle._atomic_output(target) as tmp:
+            assert tmp.parent == tmp_path and tmp.name.startswith(".t.bin.")
+            tmp.write_bytes(b"ok")
+        assert target.read_bytes() == b"ok"
+        with pytest.raises(RuntimeError):
+            with bundle._atomic_output(target) as tmp:
+                tmp.write_bytes(b"partial")
+                raise RuntimeError("boom")
+        assert target.read_bytes() == b"ok"
+        assert [p.name for p in tmp_path.iterdir()] == ["t.bin"]
+
+
+class TestWriteBundleNames:
+    @pytest.mark.parametrize("name", ["out", "out.zip", "out.tar.gz"])
+    def test_names_that_collide_after_normalization(self, tmp_path, name):
+        with pytest.raises(ValueError, match="duplicate"):
+            write_bundle(tmp_path / name, {"a/b": b"1", "./a/b": b"2"})
+        assert not (tmp_path / name).exists()
+
+    def test_slash_runs_collide_too(self, tmp_path):
+        with pytest.raises(ValueError, match="duplicate"):
+            write_bundle(tmp_path / "x.zip", {"a//b": b"1", "a/b": b"2"})
+
+    @pytest.mark.parametrize("bad", ["../x", "/abs", "a/../b", "a\\b", ""])
+    def test_names_unpack_would_refuse_are_refused_at_write(self, tmp_path, bad):
+        with pytest.raises(ValueError, match="invalid bundle member name"):
+            write_bundle(tmp_path / "x.zip", {bad: b"1"})
+        assert not (tmp_path / "x.zip").exists()
+
+    def test_normalized_names_are_what_is_written(self, tmp_path):
+        out = tmp_path / "x.zip"
+        write_bundle(out, {"./a//b": b"1"})
+        assert zipfile.ZipFile(out).namelist() == ["a/b"]
+
+
+class TestNonFiniteFloats:
+    def test_records_to_jsonl_non_finite_floats(self):
+        out = records_to_jsonl(
+            [{"x": float("nan"), "y": [float("inf")], "z": {"w": (float("-inf"),)}}]
+        )
+        row = json.loads(out, parse_constant=_reject_constant)
+        assert row == {"x": "nan", "y": ["inf"], "z": {"w": ["-inf"]}}
+
+    def test_finite_floats_and_other_values_are_unchanged(self):
+        out = records_to_jsonl([{"a": 1.5, "b": 2, "c": None, "d": "nan"}])
+        assert json.loads(out) == {"a": 1.5, "b": 2, "c": None, "d": "nan"}
