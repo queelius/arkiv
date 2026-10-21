@@ -28,6 +28,7 @@ import json
 import shutil
 import tarfile
 import zipfile
+import zlib
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import (
@@ -89,29 +90,86 @@ def _text(raw: IO[bytes], limit: int) -> IO[str]:
     return io.TextIOWrapper(io.BufferedReader(_BoundedReader(raw, limit)), encoding="utf-8")
 
 
-# A GNU long-name or pax header is read into memory whole before any member
-# is returned, so a few KB of gzip can expand into a header of hundreds of
-# MiB. Real names and pax records are tiny; the cap leaves ample room.
+# tarfile reads each GNU long-name or pax extended header into memory whole,
+# and chains them recursively (every level keeping its buffer) until it
+# reaches the member they describe, so a few KB of gzip can expand into
+# hundreds of MiB of headers. One member's chain gets a byte budget and a
+# depth limit. Global pax headers persist for the rest of the archive (git
+# archive writes one), so they get an archive-wide budget of their own.
 _MAX_TAR_HEADER_BYTES = 1024 * 1024
+_MAX_TAR_HEADER_CHAIN = 8
+_XGLTYPE = tarfile.XGLTYPE
 
 
-def _check_header_size(n: int) -> None:
-    if n > _MAX_TAR_HEADER_BYTES:
-        raise ValueError("tar header exceeds the size limit; possible tar bomb")
+class _HeaderBudget:
+    """Extended-header accounting for one TarFile being read."""
+
+    __slots__ = ("depth", "member_bytes", "global_bytes")
+
+    def __init__(self) -> None:
+        self.depth = 0
+        self.member_bytes = 0
+        self.global_bytes = 0
+
+    @classmethod
+    def of(cls, tf: tarfile.TarFile) -> "_HeaderBudget":
+        budget = getattr(tf, "_arkiv_header_budget", None)
+        if budget is None:
+            budget = cls()
+            setattr(tf, "_arkiv_header_budget", budget)
+        return budget
+
+    @contextmanager
+    def charge(self, size: int, is_global: bool) -> Iterator[None]:
+        """Charge one extended header of *size* bytes before tarfile reads
+        it; the member budget resets once its whole chain has been read."""
+        if self.depth >= _MAX_TAR_HEADER_CHAIN:
+            raise ValueError("tar header chain is too long; possible tar bomb")
+        spent = (self.global_bytes if is_global else self.member_bytes) + size
+        if spent > _MAX_TAR_HEADER_BYTES:
+            raise ValueError("tar header exceeds the size limit; possible tar bomb")
+        if is_global:
+            self.global_bytes = spent
+        else:
+            self.member_bytes = spent
+        self.depth += 1
+        try:
+            yield
+        finally:
+            self.depth -= 1
+            if self.depth == 0:
+                self.member_bytes = 0
 
 
 class _CappedTarInfo(tarfile.TarInfo):
-    """A TarInfo that refuses an oversized GNU long-name or pax header before
-    tarfile reads its payload. Overrides tarfile's private header hooks,
-    present from Python 3.8 through 3.13."""
+    """A TarInfo that bounds extended headers (see :class:`_HeaderBudget`)
+    and refuses sparse members, all before tarfile reads the bytes involved.
+
+    Overrides tarfile's private header hooks, present from Python 3.8
+    through 3.13 (a test asserts they still exist). The chain is tracked in
+    the ``_proc_*`` hooks rather than ``fromtarfile`` because 3.12+ recurses
+    through ``_fromtarfile``, which an override of ``fromtarfile`` misses.
+    """
 
     def _proc_gnulong(self, tarfile):
-        _check_header_size(self.size)
-        return super()._proc_gnulong(tarfile)
+        with _HeaderBudget.of(tarfile).charge(self.size, is_global=False):
+            return super()._proc_gnulong(tarfile)
 
     def _proc_pax(self, tarfile):
-        _check_header_size(self.size)
-        return super()._proc_pax(tarfile)
+        is_global = self.type == _XGLTYPE
+        with _HeaderBudget.of(tarfile).charge(self.size, is_global=is_global):
+            return super()._proc_pax(tarfile)
+
+    # arkiv never writes sparse members, and every sparse variant reads a map
+    # of attacker-chosen length (old GNU: chained extension blocks; pax 1.0:
+    # the data area), so all of them are refused outright.
+    def _refuse_sparse(self, *args, **kwargs):
+        raise ValueError("tar sparse members are not supported")
+
+    _proc_sparse = _refuse_sparse
+    _proc_gnusparse_00 = _refuse_sparse
+    _proc_gnusparse_01 = _refuse_sparse
+    _proc_gnusparse_10 = _refuse_sparse
 
 
 def _member_key(name: str) -> str:
@@ -247,7 +305,7 @@ def _check_member_name(name: str) -> str:
     p = PurePosixPath(name)
     if not name or p.is_absolute() or ".." in p.parts or "\\" in name:
         raise ValueError(f"invalid bundle member name: {name!r}")
-    return p.as_posix()
+    return _member_key(name)
 
 
 def write_bundle(path: PathLike, members: Mapping[str, bytes]) -> None:
@@ -483,23 +541,30 @@ def unpack_bundle(
         raise ValueError(
             f"unpack_bundle: {bundle!s} has no recognized bundle extension"
         )
-    if fmt == "zip":
-        with zipfile.ZipFile(bundle) as zf, _extract_errors(bundle):
-            _safe_extract_zip(zf, target_dir, max_entries, max_total_bytes)
-    else:
-        with tarfile.open(bundle, "r:gz", tarinfo=_CappedTarInfo) as tf:
-            with _extract_errors(bundle):
+    with _extract_errors(bundle):
+        if fmt == "zip":
+            with zipfile.ZipFile(bundle) as zf:
+                _safe_extract_zip(zf, target_dir, max_entries, max_total_bytes)
+        else:
+            with tarfile.open(bundle, "r:gz", tarinfo=_CappedTarInfo) as tf:
                 _safe_extract_tar(tf, target_dir, max_entries, max_total_bytes)
+
+
+# What a corrupt, truncated, or unextractable archive raises from the stdlib.
+_ARCHIVE_ERRORS = (OSError, EOFError, tarfile.TarError, zipfile.BadZipFile, zlib.error)
 
 
 @contextmanager
 def _extract_errors(bundle: Path) -> Iterator[None]:
-    """Report an OS-level extraction failure (a name too long for the
-    filesystem, a full disk, a corrupt stream) as a ValueError, which the
-    CLI prints as an error rather than a traceback."""
+    """Report a failure to open or extract *bundle* (corrupt or truncated
+    data, a name too long for the filesystem, a full disk) as a ValueError,
+    which the CLI prints as an error rather than a traceback. A missing
+    bundle stays a FileNotFoundError."""
     try:
         yield
-    except OSError as e:
+    except FileNotFoundError:
+        raise
+    except _ARCHIVE_ERRORS as e:
         raise ValueError(f"cannot extract {bundle.name}: {e}") from e
 
 
@@ -518,7 +583,8 @@ def _safe_extract_zip(
     max_entries: int,
     max_total_bytes: int,
 ) -> None:
-    """Extract a zip, rejecting path-escape entries, duplicates, and bombs."""
+    """Extract a zip, rejecting path-escape entries, invalid or duplicate
+    names (as :func:`_check_member_name` normalizes them), and bombs."""
     infos = zf.infolist()
     if len(infos) > max_entries:
         raise ValueError(
@@ -533,7 +599,7 @@ def _safe_extract_zip(
             raise ValueError(
                 f"unsafe zip entry (path escape): {info.filename!r}"
             )
-        _check_unique(_member_key(info.filename), seen)
+        _check_unique(_check_member_name(info.filename), seen)
         total += info.file_size
         if total > max_total_bytes:
             raise ValueError(
@@ -549,8 +615,8 @@ def _safe_extract_tar(
     max_entries: int,
     max_total_bytes: int,
 ) -> None:
-    """Extract a tar, rejecting path-escape entries, duplicates, links, and
-    bombs.
+    """Extract a tar, rejecting path-escape entries, invalid or duplicate
+    names, links and other non-file members, and bombs.
 
     Members are checked as they stream in, so a crafted tar of millions of
     entries is refused after *max_entries*, not after parsing them all.
@@ -569,11 +635,18 @@ def _safe_extract_tar(
             raise ValueError(
                 f"unsafe tar entry (path escape): {member.name!r}"
             )
-        # Links are not part of the directory form (and open_member refuses
-        # them too), even one that stays inside the archive.
+        key = _check_member_name(member.name)
+        # Only regular files and directories belong to the directory form.
+        # Links are refused even when they stay inside the archive (and
+        # open_member refuses them too); FIFOs and devices always are.
         if member.issym() or member.islnk():
             raise ValueError(f"bundle has a link member: {member.name!r}")
-        _check_unique(_member_key(member.name), seen)
+        if not (member.isfile() or member.isdir()):
+            raise ValueError(
+                f"bundle has a special member (not a file or directory): "
+                f"{member.name!r}"
+            )
+        _check_unique(key, seen)
         total += member.size
         if total > max_total_bytes:
             raise ValueError(

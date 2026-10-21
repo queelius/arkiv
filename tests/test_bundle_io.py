@@ -337,3 +337,186 @@ class TestHostileTarHeaders:
         dst = tmp_path / "dst"
         unpack_bundle(out, dst)
         assert (dst / name).read_bytes() == data
+
+
+# ── hand-built hostile tar streams ─────────────────────────────
+
+_BLOCK = tarfile.BLOCKSIZE
+
+
+def _pad(data):
+    return data + b"\0" * (-len(data) % _BLOCK)
+
+
+def _raw_header(name, size, typeflag):
+    """One ustar header block with an arbitrary type flag (tarfile itself
+    will not write, say, a GNU long-name header followed by another)."""
+    info = tarfile.TarInfo(name)
+    info.size = size
+    block = bytearray(info.tobuf(format=tarfile.USTAR_FORMAT))
+    block[156:157] = typeflag
+    block[148:156] = b"        "
+    block[148:156] = b"%06o\0 " % sum(block)
+    return bytes(block)
+
+
+def _pax_record(keyword, value):
+    """A self-describing pax record: ``"<len> <keyword>=<value>\\n"``."""
+    body = f" {keyword}={value}\n"
+    length = len(body)
+    while len(str(length)) + len(body) != length:
+        length = len(str(length)) + len(body)
+    return f"{length}{body}".encode()
+
+
+def _tar_gz_stream(tmp_path, name, blocks):
+    """Gzip raw tar *blocks*, end with records.jsonl and the end marker."""
+    data = records_to_jsonl(RECORDS)
+    raw = b"".join(blocks)
+    raw += _raw_header("records.jsonl", len(data), tarfile.REGTYPE) + _pad(data)
+    out = tmp_path / name
+    out.write_bytes(gzip.compress(raw + b"\0" * (2 * _BLOCK)))
+    return out
+
+
+def tar_gz_header_chain(tmp_path, kind, n, each):
+    """*n* chained extended headers of *each* bytes before one member: GNU
+    long names, or pax records. Each is under the per-header cap."""
+    if kind == "gnu":
+        typeflag, payload = tarfile.GNUTYPE_LONGNAME, b"n" * each
+    else:
+        typeflag, payload = tarfile.XHDTYPE, _pax_record("comment", "v" * (each - 20))
+    link = _raw_header("././@LongLink", len(payload), typeflag) + _pad(payload)
+    return _tar_gz_stream(tmp_path, f"chain-{kind}.tar.gz", [link] * n)
+
+
+def _old_gnu_sparse(tmp_path, n_blocks):
+    """An old-GNU sparse member chaining *n_blocks* extension blocks of 21
+    map entries each: a map of unbounded length, unknown upfront."""
+    info = tarfile.TarInfo("records.jsonl")
+    info.type = tarfile.GNUTYPE_SPARSE
+    head = bytearray(info.tobuf(format=tarfile.GNU_FORMAT))
+    head[482] = 1  # isextended
+    head[148:156] = b"        "
+    head[148:156] = b"%06o\0 " % sum(head[:_BLOCK])
+    ext = bytearray(_BLOCK)
+    for i in range(21):  # (offset, numbytes) = (1, 1), 12 octal bytes each
+        ext[slice(i * 24, i * 24 + 24)] = b"%011o\0%011o\0" % (1, 1)
+    ext[504] = 1
+    out = tmp_path / "sparse-old.tar.gz"
+    out.write_bytes(gzip.compress(bytes(head[:_BLOCK]) + bytes(ext) * n_blocks))
+    return out
+
+
+def _pax_sparse(tmp_path, version, map_entries=1):
+    """A pax-format GNU sparse member of *version* ``"0.0"``, ``"0.1"`` or
+    ``"1.0"`` (1.0 keeps its map, here *map_entries* long, in the data)."""
+    info = tarfile.TarInfo("GNUSparseFile.0/records.jsonl")
+    data = b""
+    if version == "0.0":
+        info.pax_headers = {"GNU.sparse.size": "1", "GNU.sparse.numbytes": "1"}
+    elif version == "0.1":
+        info.pax_headers = {"GNU.sparse.size": "1", "GNU.sparse.map": "0,1"}
+    else:
+        info.pax_headers = {
+            "GNU.sparse.major": "1",
+            "GNU.sparse.minor": "0",
+            "GNU.sparse.name": "records.jsonl",
+            "GNU.sparse.realsize": "3",
+        }
+        data = f"{map_entries}\n".encode() + b"1\n1\n" * map_entries
+    info.size = len(data)
+    out = tmp_path / f"sparse-{version}.tar.gz"
+    with tarfile.open(out, "w:gz", format=tarfile.PAX_FORMAT) as tf:
+        tf.addfile(info, io.BytesIO(data))
+    return out
+
+
+READERS = {
+    "iter_jsonl": lambda path, tmp_path: list(iter_jsonl(path)),
+    "unpack_bundle": lambda path, tmp_path: unpack_bundle(path, tmp_path / "dst"),
+}
+_PEAK_LIMIT = 8 * 1024 * 1024
+
+
+def _refused_within_memory(read, path, tmp_path, match):
+    """Run *read* on a prebuilt hostile *path*: it must raise a ValueError
+    matching *match* while peak traced memory stays under _PEAK_LIMIT."""
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match=match):
+            read(path, tmp_path)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < _PEAK_LIMIT
+
+
+@pytest.mark.parametrize("reader", sorted(READERS))
+class TestTarHeaderChainsAndSparse:
+    """Extended headers are charged per member across a whole chain, and
+    sparse members (which arkiv never writes) are refused outright."""
+
+    @pytest.mark.parametrize("kind", ["gnu", "pax"])
+    def test_chained_headers_share_one_budget(self, tmp_path, reader, kind):
+        path = tar_gz_header_chain(tmp_path, kind, 20, 1_000_000)
+        _refused_within_memory(READERS[reader], path, tmp_path, "header")
+
+    def test_overlong_header_chain_refused(self, tmp_path, reader):
+        path = tar_gz_header_chain(tmp_path, "gnu", 400, 100)
+        _refused_within_memory(READERS[reader], path, tmp_path, "header")
+
+    def test_short_header_chain_still_reads(self, tmp_path, reader):
+        READERS[reader](tar_gz_header_chain(tmp_path, "pax", 8, 1000), tmp_path)
+
+    def test_small_global_pax_header_still_reads(self, tmp_path, reader):
+        # git archive writes one global header (the commit id).
+        out = tmp_path / "global.tar.gz"
+        data = records_to_jsonl(RECORDS)
+        with tarfile.open(
+            out, "w:gz", format=tarfile.PAX_FORMAT, pax_headers={"comment": "abc"}
+        ) as tf:
+            info = tarfile.TarInfo("records.jsonl")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        with tarfile.open(out) as tf:
+            tf.getmembers()
+            assert tf.pax_headers == {"comment": "abc"}
+        result = READERS[reader](out, tmp_path)
+        if reader == "iter_jsonl":
+            assert result == RECORDS
+        else:
+            assert (tmp_path / "dst" / "records.jsonl").read_bytes() == data
+
+    def test_global_headers_have_an_archive_wide_budget(self, tmp_path, reader):
+        record = _pax_record("comment", "g" * 500_000)
+        glob = _raw_header("pax_global_header", len(record), tarfile.XGLTYPE)
+        path = _tar_gz_stream(tmp_path, "globals.tar.gz", [glob + _pad(record)] * 3)
+        _refused_within_memory(READERS[reader], path, tmp_path, "header")
+
+    def test_old_gnu_sparse_refused(self, tmp_path, reader):
+        path = _old_gnu_sparse(tmp_path, 120_000)
+        _refused_within_memory(READERS[reader], path, tmp_path, "sparse")
+
+    @pytest.mark.parametrize("version", ["0.0", "0.1", "1.0"])
+    def test_pax_sparse_refused(self, tmp_path, reader, version):
+        path = _pax_sparse(tmp_path, version, map_entries=200_000)
+        _refused_within_memory(READERS[reader], path, tmp_path, "sparse")
+
+
+def test_capped_tarinfo_hooks_exist_in_tarfile():
+    """The caps override private tarfile hooks; if a Python release renames
+    one, the override would silently stop applying. Fail loudly instead."""
+    from arkiv.bundle import _CappedTarInfo
+
+    hooks = [
+        "_proc_gnulong",
+        "_proc_pax",
+        "_proc_sparse",
+        "_proc_gnusparse_00",
+        "_proc_gnusparse_01",
+        "_proc_gnusparse_10",
+    ]
+    for name in hooks:
+        assert callable(getattr(tarfile.TarInfo, name, None)), name
+        assert name in vars(_CappedTarInfo), name

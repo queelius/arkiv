@@ -274,6 +274,75 @@ class TestHostileTarMembers:
             unpack_bundle(bad, tmp_path / "dst")
 
 
+class TestMemberNamesAndArchiveErrors:
+    """Member names are checked as open_member checks them, and anything a
+    corrupt or unextractable archive raises reaches the caller (and the CLI)
+    as a ValueError."""
+
+    def test_unpack_refuses_dotdot_alias_in_tar(self, tmp_path):
+        bad = _tar_gz(
+            tmp_path / "alias.tar.gz",
+            [
+                (tarfile.TarInfo("x/a"), b"a"),
+                (tarfile.TarInfo("records.jsonl"), b'{"n": 1}\n'),
+                (tarfile.TarInfo("x/../records.jsonl"), b'{"n": 2}\n'),
+            ],
+        )
+        with pytest.raises(ValueError, match="invalid bundle member name"):
+            unpack_bundle(bad, tmp_path / "dst")
+        assert not (tmp_path / "dst" / "records.jsonl").exists()
+
+    def test_unpack_refuses_dotdot_alias_in_zip(self, tmp_path):
+        # zipfile would drop the '..' and write both to x/records.jsonl.
+        bad = tmp_path / "alias.zip"
+        with zipfile.ZipFile(bad, "w") as zf:
+            zf.writestr("x/records.jsonl", '{"n": 1}\n')
+            zf.writestr("x/../records.jsonl", '{"n": 2}\n')
+        with pytest.raises(ValueError, match="invalid bundle member name"):
+            unpack_bundle(bad, tmp_path / "dst")
+        assert not (tmp_path / "dst" / "x").exists()
+
+    def test_truncated_gzip_is_value_error(self, tmp_path):
+        good = tmp_path / "good.tar.gz"
+        _tar_gz(good, [(tarfile.TarInfo("a.jsonl"), b'{"n": 1}\n' * 2000)])
+        bad = tmp_path / "trunc.tar.gz"
+        bad.write_bytes(good.read_bytes()[: good.stat().st_size // 2])
+        with pytest.raises(ValueError, match="cannot extract trunc.tar.gz"):
+            unpack_bundle(bad, tmp_path / "dst")
+
+    @pytest.mark.parametrize("name", ["garbage.tar.gz", "garbage.zip"])
+    def test_garbage_bundle_is_value_error(self, tmp_path, name):
+        bad = tmp_path / name
+        bad.write_bytes(b"not an archive at all" * 10)
+        with pytest.raises(ValueError, match=f"cannot extract {name}"):
+            unpack_bundle(bad, tmp_path / "dst")
+
+    def test_missing_bundle_stays_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            unpack_bundle(tmp_path / "absent.tar.gz", tmp_path / "dst")
+
+    @pytest.mark.parametrize("kind", [tarfile.FIFOTYPE, tarfile.CHRTYPE])
+    def test_unpack_refuses_special_members(self, tmp_path, kind):
+        special = tarfile.TarInfo("media/pipe")
+        special.type = kind
+        bad = _tar_gz(
+            tmp_path / "special.tar.gz",
+            [(tarfile.TarInfo("records.jsonl"), b"{}\n"), (special, None)],
+        )
+        dst = tmp_path / "dst"
+        with pytest.raises(ValueError, match="special"):
+            unpack_bundle(bad, dst)
+        assert list(dst.iterdir()) == []
+
+    def test_cli_convert_of_garbage_bundle_is_a_clean_error(self, tmp_path):
+        bad = tmp_path / "garbage.tar.gz"
+        bad.write_bytes(b"not an archive at all" * 10)
+        result = run_arkiv("convert", str(bad), str(tmp_path / "out.db"))
+        assert result.returncode == 1
+        assert "Error:" in result.stderr
+        assert "Traceback" not in result.stderr
+
+
 # ── CLI integration tests ──────────────────────────────────────
 
 def _seed_db(tmp_path):
