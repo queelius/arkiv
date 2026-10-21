@@ -65,6 +65,25 @@ def _format_of(path: PathLike) -> Optional[str]:
 _MAX_MEMBER_BYTES = 8 * 1024**3  # 8 GiB decompressed, as for unpack_bundle
 _MAX_LINE_CHARS = 64 * 1024**2  # one record
 
+# What the stdlib raises while *reading the data* of a corrupt or truncated
+# compressed member (a bad deflate or gzip stream, a short stream, a failed
+# zip CRC). The one list the streaming path (_BoundedReader) and the
+# extraction path (_ARCHIVE_ERRORS) both draw from, so they cannot drift.
+_CORRUPT_DATA_ERRORS = (
+    zlib.error,
+    EOFError,
+    gzip.BadGzipFile,
+    zipfile.BadZipFile,
+)
+# Everything a corrupt, truncated, or unextractable archive raises.
+_ARCHIVE_ERRORS = (OSError, tarfile.TarError) + _CORRUPT_DATA_ERRORS
+# What zipfile raises on *opening* a member it cannot decode: an unsupported
+# compression method (NotImplementedError) or an encrypted entry
+# (RuntimeError, "password required"). RuntimeError is too broad to catch
+# anywhere else, so the mapping is confined to those calls (see
+# _zip_member_errors).
+_ZIP_UNREADABLE_ERRORS = (NotImplementedError, RuntimeError)
+
 
 class _BoundedReader(io.RawIOBase):
     """A binary stream that raises once more than *limit* bytes are read:
@@ -79,7 +98,10 @@ class _BoundedReader(io.RawIOBase):
         return True
 
     def readinto(self, b: Any) -> int:
-        n = self._raw.readinto(b)  # type: ignore[attr-defined]
+        try:
+            n = self._raw.readinto(b)  # type: ignore[attr-defined]
+        except _CORRUPT_DATA_ERRORS as e:
+            raise ValueError("corrupt or truncated compressed data") from e
         self._left -= n
         if self._left < 0:
             raise ValueError("bundle member exceeds the decompressed size limit")
@@ -87,7 +109,23 @@ class _BoundedReader(io.RawIOBase):
 
 
 def _text(raw: IO[bytes], limit: int) -> IO[str]:
-    return io.TextIOWrapper(io.BufferedReader(_BoundedReader(raw, limit)), encoding="utf-8")
+    # utf-8-sig: a leading byte order mark is dropped rather than left to
+    # make the first JSONL line unparseable (hiding its record).
+    return io.TextIOWrapper(
+        io.BufferedReader(_BoundedReader(raw, limit)), encoding="utf-8-sig"
+    )
+
+
+@contextmanager
+def _zip_member_errors(zf: zipfile.ZipFile) -> Iterator[None]:
+    """Report a zip member that cannot be decoded (unsupported compression,
+    encryption) as a ValueError naming the bundle. Wrap only zipfile's open
+    and extract calls: a RuntimeError from anywhere else is a real bug."""
+    try:
+        yield
+    except _ZIP_UNREADABLE_ERRORS as e:
+        name = Path(zf.filename).name if zf.filename else "bundle"
+        raise ValueError(f"cannot read {name}: {e}") from e
 
 
 # tarfile reads each GNU long-name or pax extended header into memory whole,
@@ -393,7 +431,9 @@ def open_member(
                 raise FileNotFoundError(f"{member!r} not in {path!s}") from None
             if info.file_size > max_bytes:
                 raise ValueError(f"{member!r} in {path!s} exceeds the size limit")
-            with zf.open(info) as raw, _text(raw, max_bytes) as f:
+            with _zip_member_errors(zf):
+                raw = zf.open(info)
+            with raw, _text(raw, max_bytes) as f:
                 yield f
         return
     # Stream the tar instead of tf.getmember(), which parses every header in
@@ -461,15 +501,16 @@ _PEEK_MAX_BYTES = 64 * 1024**2
 
 def peek_jsonl(path: PathLike, member: str = "records.jsonl") -> Optional[Dict[str, Any]]:
     """The first record of a JSONL member, or None if there is none or the
-    archive cannot be read at all (missing, corrupt, not UTF-8, or the first
-    record lies beyond a small read budget). Meant for format detection,
+    archive cannot be read at all (missing, corrupt or truncated, encrypted
+    or compressed by an unsupported method, not UTF-8, or the first record
+    lies beyond a small read budget). Meant for format detection,
     where unreadable input is simply "not ours"."""
     try:
         records = iter_jsonl(
             path, member, max_bytes=_PEEK_MAX_BYTES, max_line_chars=_PEEK_MAX_BYTES
         )
         return next(records, None)
-    except (OSError, ValueError, EOFError, zipfile.BadZipFile, tarfile.TarError):
+    except (ValueError,) + _ARCHIVE_ERRORS:
         return None
 
 
@@ -550,10 +591,6 @@ def unpack_bundle(
                 _safe_extract_tar(tf, target_dir, max_entries, max_total_bytes)
 
 
-# What a corrupt, truncated, or unextractable archive raises from the stdlib.
-_ARCHIVE_ERRORS = (OSError, EOFError, tarfile.TarError, zipfile.BadZipFile, zlib.error)
-
-
 @contextmanager
 def _extract_errors(bundle: Path) -> Iterator[None]:
     """Report a failure to open or extract *bundle* (corrupt or truncated
@@ -606,7 +643,8 @@ def _safe_extract_zip(
                 f"bundle uncompressed size exceeds limit "
                 f"({max_total_bytes} bytes); possible zip bomb"
             )
-    zf.extractall(target_dir)
+    with _zip_member_errors(zf):
+        zf.extractall(target_dir)
 
 
 def _safe_extract_tar(

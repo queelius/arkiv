@@ -120,9 +120,11 @@ def parse_record(data: Dict[str, Any]) -> Record:
 def parse_jsonl(path: Union[str, Path]) -> Iterator[Record]:
     """Parse a JSONL file, yielding Records.
 
-    Skips blank lines and invalid JSON.
+    Skips blank lines and invalid JSON. A leading UTF-8 byte order mark
+    (written by some Windows editors) is ignored, not read as part of the
+    first record.
     """
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if not line:

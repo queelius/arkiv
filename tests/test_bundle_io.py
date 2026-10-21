@@ -520,3 +520,94 @@ def test_capped_tarinfo_hooks_exist_in_tarfile():
     for name in hooks:
         assert callable(getattr(tarfile.TarInfo, name, None)), name
         assert name in vars(_CappedTarInfo), name
+
+
+BOM = b"\xef\xbb\xbf"
+BOM_JSONL = BOM + b'{"content":"first"}\n{"content":"second"}\n'
+
+
+class TestByteOrderMark:
+    """A UTF-8 BOM (Windows editors write one) must not hide record one."""
+
+    @pytest.mark.parametrize("name", ["r.jsonl", "r.jsonl.gz", "r.zip", "r.tar.gz"])
+    def test_iter_jsonl_keeps_first_record_after_bom(self, tmp_path, name):
+        out = tmp_path / name
+        if name.endswith(".jsonl"):
+            out.write_bytes(BOM_JSONL)
+        elif name.endswith(".jsonl.gz"):
+            out.write_bytes(gzip.compress(BOM_JSONL))
+        else:
+            write_bundle(out, {"records.jsonl": BOM_JSONL})
+        assert [r["content"] for r in iter_jsonl(out)] == ["first", "second"]
+
+    def test_peek_sees_first_record_after_bom(self, tmp_path):
+        out = tmp_path / "r.jsonl"
+        out.write_bytes(BOM_JSONL)
+        assert peek_jsonl(out) == {"content": "first"}
+
+
+def make_corrupt(tmp_path, corruption):
+    """A one-member bundle (records.jsonl) damaged in the named way."""
+    body = records_to_jsonl({"uri": f"x://a/{i}", "n": i} for i in range(500))
+    if corruption == "bad_gzip_body":
+        # Truncated inside the first deflate block: nothing decodes at all.
+        out = tmp_path / "r.jsonl.gz"
+        out.write_bytes(gzip.compress(body)[:14])
+        return out
+    out = tmp_path / "r.zip"
+    write_bundle(out, {"records.jsonl": body})
+    data = bytearray(out.read_bytes())
+    local = data.find(b"PK\x03\x04")
+    central = data.find(b"PK\x01\x02")
+    if corruption == "flipped_deflate":
+        start = local + 30 + len(b"records.jsonl")  # no extra field
+        data[start : start + 8] = b"\xff" * 8  # reserved deflate block type
+    elif corruption == "method_99":
+        data[local + 8 : local + 10] = (99).to_bytes(2, "little")
+        data[central + 10 : central + 12] = (99).to_bytes(2, "little")
+    elif corruption == "encrypted_flag":
+        data[local + 6] |= 1
+        data[central + 8] |= 1
+    else:
+        raise AssertionError(corruption)
+    out.write_bytes(bytes(data))
+    return out
+
+
+ZIP_CORRUPTIONS = ["flipped_deflate", "method_99", "encrypted_flag"]
+
+
+class TestUnreadableMembers:
+    """Corrupt or unsupported compressed data is a ValueError (which the CLI
+    prints as an error), not a zlib/EOF/NotImplemented/Runtime traceback."""
+
+    @pytest.mark.parametrize("corruption", ZIP_CORRUPTIONS + ["bad_gzip_body"])
+    def test_peek_returns_none_on_unreadable_member(self, tmp_path, corruption):
+        assert peek_jsonl(make_corrupt(tmp_path, corruption)) is None
+
+    @pytest.mark.parametrize("corruption", ZIP_CORRUPTIONS + ["bad_gzip_body"])
+    def test_iter_jsonl_raises_value_error(self, tmp_path, corruption):
+        with pytest.raises(ValueError):
+            list(iter_jsonl(make_corrupt(tmp_path, corruption)))
+
+    def test_unsupported_and_encrypted_errors_name_the_bundle(self, tmp_path):
+        for corruption in ("method_99", "encrypted_flag"):
+            out = make_corrupt(tmp_path, corruption)
+            with pytest.raises(ValueError, match="r.zip"):
+                list(iter_jsonl(out))
+
+    @pytest.mark.parametrize("corruption", ZIP_CORRUPTIONS)
+    def test_unpack_bundle_raises_value_error(self, tmp_path, corruption):
+        out = make_corrupt(tmp_path, corruption)
+        with pytest.raises(ValueError, match="r.zip"):
+            unpack_bundle(out, tmp_path / "dst")
+
+    def test_bad_zip_crc_is_a_value_error_when_streamed(self, tmp_path):
+        out = tmp_path / "crc.zip"
+        write_bundle(out, {"records.jsonl": b'{"a": 1}\n' * 10})
+        data = bytearray(out.read_bytes())
+        central = data.find(b"PK\x01\x02")
+        data[central + 16] ^= 0xFF  # the central directory's CRC-32 is checked
+        out.write_bytes(bytes(data))
+        with pytest.raises(ValueError):
+            list(iter_jsonl(out))

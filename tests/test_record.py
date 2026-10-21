@@ -161,3 +161,9 @@ class TestParseJsonl:
         f.write_text('{"content": "one"}\nnot json\n{"content": "two"}\n')
         records = list(parse_jsonl(f))
         assert len(records) == 2
+
+
+def test_parse_jsonl_keeps_first_record_after_bom(tmp_path):
+    p = tmp_path / "bom.jsonl"
+    p.write_bytes(b'\xef\xbb\xbf{"content":"first"}\n{"content":"second"}\n')
+    assert [r.content for r in parse_jsonl(p)] == ["first", "second"]
