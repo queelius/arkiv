@@ -324,6 +324,30 @@ class TestMergeSchema:
         result = merge_schema({}, {})
         assert result == {}
 
+    def test_merge_ignores_curated_values_on_high_cardinality_key(self):
+        auto = {"id": SchemaEntry(type="string", count=30, values=None, example="id-0")}
+        curated = {"id": SchemaEntry(type="string", count=30, values=["id-0"])}
+        r = merge_schema(auto, curated)["id"]
+        assert r.values is None and r.example == "id-0"
+
+    def test_merge_keeps_discovered_description_when_curated_has_none(self):
+        auto = {
+            "k": SchemaEntry(type="string", count=1, values=["a"], description="kept")
+        }
+        curated = {"k": SchemaEntry(type="string", count=0)}
+        assert merge_schema(auto, curated)["k"].description == "kept"
+
+    def test_merge_carries_auto_example(self):
+        auto = {"id": SchemaEntry(type="string", count=30, example="id-0")}
+        curated = {"id": SchemaEntry(type="string", count=0, description="d")}
+        r = merge_schema(auto, curated)["id"]
+        assert r.example == "id-0" and r.description == "d"
+
+    def test_curated_only_key_keeps_curated_values(self):
+        curated = {"gone": SchemaEntry(type="string", count=5, values=["x"])}
+        r = merge_schema({}, curated)["gone"]
+        assert r.values == ["x"] and r.count == 0
+
 
 class TestTypeFromFirstOccurrence:
     """SPEC 2.3: type is the first occurrence, and it must agree with the

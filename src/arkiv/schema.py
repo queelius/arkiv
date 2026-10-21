@@ -230,9 +230,13 @@ def merge_schema(
 ) -> Dict[str, SchemaEntry]:
     """Merge auto-discovered schema with curated schema.
 
-    Live fields (type, count) come from auto.
-    Stable fields (description, values if curated) come from curated.
-    Keys in curated but not in auto are preserved with count=0.
+    Live fields (type, count, example) come from auto. Curated ``values``
+    win only for an enumerable key (``auto.values is not None``); a
+    high-cardinality key keeps ``values=None`` and its discovered
+    ``example``, so a stale ``values`` list in ``schema.yaml`` cannot stick.
+    ``description`` is the curated one when set, else the discovered one.
+    Keys in curated but not in auto are preserved with count=0 and their
+    curated values.
     """
     result = {}
 
@@ -240,13 +244,19 @@ def merge_schema(
     for key, auto_entry in auto.items():
         curated_entry = curated.get(key)
         if curated_entry:
+            values = auto_entry.values
+            if values is not None and curated_entry.values is not None:
+                values = curated_entry.values
             result[key] = SchemaEntry(
                 type=auto_entry.type,
                 count=auto_entry.count,
-                values=curated_entry.values
-                if curated_entry.values is not None
-                else auto_entry.values,
-                description=curated_entry.description,
+                values=values,
+                example=auto_entry.example,
+                description=(
+                    curated_entry.description
+                    if curated_entry.description is not None
+                    else auto_entry.description
+                ),
             )
         else:
             result[key] = auto_entry

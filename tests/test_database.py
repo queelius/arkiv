@@ -677,8 +677,9 @@ class TestFalsyExample:
         score = schema["metadata_keys"]["score"]
         assert score["type"] == "number"
         assert score["count"] == 25
-        # The example (0) must survive into sample_values, not be dropped.
-        assert score["values"] == [0]
+        # The example (0) must survive as the example, not be dropped.
+        assert score["example"] == 0
+        assert score["values"] == []
 
 
 class TestInfo:
@@ -694,3 +695,44 @@ class TestInfo:
         assert "test" in info["collections"]
         assert info["collections"]["test"]["record_count"] == 2
         db.close()
+
+
+class TestSchemaExampleColumn:
+    def test_opens_database_from_before_example_column(self, tmp_path):
+        # Review Focus 2: a 0.4.0 _schema table has no example column.
+        p = tmp_path / "old.db"
+        conn = sqlite3.connect(str(p))
+        conn.executescript(
+            "CREATE TABLE records (id INTEGER PRIMARY KEY, collection TEXT, "
+            "mimetype TEXT, uri TEXT, content TEXT, timestamp TEXT, "
+            "timestamp_original TEXT, metadata JSON);"
+            "CREATE TABLE _schema (collection TEXT, key_path TEXT, type TEXT, "
+            "count INTEGER, sample_values TEXT, description TEXT);"
+            "CREATE TABLE _metadata (key TEXT PRIMARY KEY, value TEXT);"
+        )
+        conn.execute(
+            "INSERT INTO _schema VALUES ('c', 'k', 'string', 1, '[\"a\"]', NULL)"
+        )
+        conn.commit()
+        conn.close()
+
+        ro = Database(p, read_only=True)
+        assert ro.get_schema("c")["metadata_keys"]["k"]["values"] == ["a"]
+        ro.close()
+        Database(p).close()  # writable open migrates
+        conn = sqlite3.connect(str(p))
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(_schema)")}
+        conn.close()
+        assert "example" in cols
+
+    def test_get_schema_exposes_example(self, tmp_path):
+        f = tmp_path / "t.jsonl"
+        f.write_text(
+            "".join(f'{{"metadata": {{"id": "id-{i}"}}}}\n' for i in range(30))
+        )
+        db = Database(tmp_path / "t.db")
+        db.import_jsonl(f, collection="c")
+        entry = db.get_schema("c")["metadata_keys"]["id"]
+        db.close()
+        assert entry["values"] == []
+        assert entry["example"] == "id-0"

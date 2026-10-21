@@ -2,7 +2,8 @@
 
 import json
 import pytest
-from arkiv.database import Database
+import yaml
+from arkiv.database import Database, build_database
 from arkiv.readme import parse_readme
 from arkiv.schema import load_schema_yaml
 
@@ -396,3 +397,95 @@ class TestNestedExport:
         db.close()
         lines = (out / "data" / "data.jsonl").read_text().strip().split("\n")
         assert len(lines) == 1
+
+
+def _ids_archive(tmp_path, ids):
+    """Build dir -> db -> dir for records with metadata.id from *ids*."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "c.jsonl").write_text(
+        "".join(json.dumps({"metadata": {"id": i}}) + "\n" for i in ids)
+    )
+    db_path = tmp_path / "a.db"
+    build_database(src, db_path, fingerprint=False)
+    out = tmp_path / "out"
+    db = Database(db_path)
+    db.export(out)
+    db.close()
+    return out
+
+
+def _keys(archive_dir):
+    data = yaml.safe_load((archive_dir / "schema.yaml").read_text())
+    return data["c"]["metadata_keys"]
+
+
+def _reconvert(archive_dir, out):
+    db_path = archive_dir.parent / (out.name + ".db")
+    build_database(archive_dir, db_path, fingerprint=False)
+    db = Database(db_path)
+    db.export(out)
+    db.close()
+    return out
+
+
+class TestSchemaExample:
+    """L4: a high-cardinality key's example is not exported as values."""
+
+    def test_export_writes_example_not_values(self, tmp_path):
+        out = _ids_archive(tmp_path, [f"id-{i}" for i in range(30)])
+        keys = _keys(out)
+        assert keys["id"] == {"type": "string", "count": 30, "example": "id-0"}
+
+    def test_example_follows_data_after_reimport(self, tmp_path):
+        out = _ids_archive(tmp_path, [f"id-{i}" for i in range(30)])
+        jsonl = out / "c.jsonl"
+        jsonl.write_text(
+            "".join(
+                json.dumps({"metadata": {"id": f"NEW-{i}"}}) + "\n" for i in range(30)
+            )
+        )
+        keys = _keys(_reconvert(out, tmp_path / "out2"))
+        assert keys["id"].get("example") == "NEW-0" and "values" not in keys["id"]
+
+    def test_heals_values_written_by_older_arkiv(self, tmp_path):
+        # Review Focus 3: schema.yaml as 0.4.0 wrote it carries a bogus
+        # single-element values list on a 30-distinct-value key.
+        out = _ids_archive(tmp_path, [f"id-{i}" for i in range(30)])
+        (out / "schema.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "c": {
+                        "record_count": 30,
+                        "metadata_keys": {
+                            "id": {"type": "string", "count": 30, "values": ["id-0"]}
+                        },
+                    }
+                }
+            )
+        )
+        keys = _keys(_reconvert(out, tmp_path / "out2"))
+        assert "values" not in keys["id"] and keys["id"]["example"] == "id-0"
+
+    def test_curated_description_and_enum_values_survive(self, tmp_path):
+        out = _ids_archive(tmp_path, ["a", "b", "a"])
+        (out / "schema.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "c": {
+                        "record_count": 3,
+                        "metadata_keys": {
+                            "id": {
+                                "type": "string",
+                                "count": 3,
+                                "values": ["a"],
+                                "description": "curated",
+                            }
+                        },
+                    }
+                }
+            )
+        )
+        keys = _keys(_reconvert(out, tmp_path / "out2"))
+        assert keys["id"]["values"] == ["a"]
+        assert keys["id"]["description"] == "curated"

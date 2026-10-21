@@ -238,7 +238,7 @@ When an implementation imports a README.md with a sibling `schema.yaml`, the two
 | `type` | Data | Always recomputed from JSONL records |
 | `count` | Data | Always recomputed from JSONL records |
 | `description` | schema.yaml | Preserved across reimports |
-| `values` | schema.yaml if present, else data | Curated values override auto-computed |
+| `values` | schema.yaml if present, else data | Curated values override auto-computed for enumerable keys (at most 20 distinct scalar values); a high-cardinality key keeps its discovered `example`. |
 | `example` | Data | Recomputed from JSONL records |
 
 Keys present in schema.yaml but not in the data are preserved with `count: 0`. This allows schema.yaml to document keys that may appear in future data.
@@ -348,8 +348,9 @@ CREATE TABLE _schema (
     key_path TEXT,           -- metadata key name
     type TEXT,               -- JSON type name
     count INTEGER,
-    sample_values TEXT,      -- JSON array (values or [example])
-    description TEXT         -- from schema.yaml
+    sample_values TEXT,      -- JSON array (enumerated values)
+    description TEXT,        -- from schema.yaml
+    example TEXT             -- JSON (example value)
 );
 
 CREATE TABLE _metadata (
@@ -371,7 +372,7 @@ The `_metadata` table stores README data as key-value pairs:
 - `readme_frontmatter`: YAML-serialized frontmatter dict
 - `readme_body`: markdown body text
 
-The `_schema` table stores the merged schema (auto-discovered + curated). The `sample_values` column holds either the enumerated `values` array or a single-element array containing `example`.
+The `_schema` table stores the merged schema (auto-discovered + curated). The `sample_values` column holds the enumerated `values` array; the `example` column holds the example value as JSON.
 
 The `_assets` table carries the archive's binary assets (the `media/` subtree, referenced by `file://media/...` URIs) as BLOBs keyed by their archive-relative path. This is what makes the database form a complete peer of the directory form: a `db -> dir` export reconstructs `media/` byte-for-byte. Databases produced before this table existed simply have no assets to reconstruct, and export tolerates its absence.
 

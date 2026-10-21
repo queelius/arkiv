@@ -158,7 +158,8 @@ class Database:
                 type TEXT,
                 count INTEGER,
                 sample_values TEXT,
-                description TEXT
+                description TEXT,
+                example TEXT
             );
 
             CREATE TABLE IF NOT EXISTS _metadata (
@@ -181,6 +182,11 @@ class Database:
         cols = {row[1] for row in self.conn.execute("PRAGMA table_info(records)")}
         if "timestamp_original" not in cols:
             self.conn.execute("ALTER TABLE records ADD COLUMN timestamp_original TEXT")
+            self.conn.commit()
+        # Migration: _schema.example keeps a high-cardinality key's example
+        # apart from enumerated values (sample_values used to hold both).
+        if not self._has_column("_schema", "example"):
+            self.conn.execute("ALTER TABLE _schema ADD COLUMN example TEXT")
             self.conn.commit()
 
     def import_jsonl(
@@ -361,14 +367,37 @@ class Database:
 
     def _load_schema_descriptions(self, collection: str) -> Dict[str, str]:
         """Load existing schema descriptions for a collection."""
-        try:
-            rows = self.conn.execute(
-                "SELECT key_path, description FROM _schema WHERE collection = ? AND description IS NOT NULL",
-                (collection,),
-            ).fetchall()
-            return {row[0]: row[1] for row in rows}
-        except sqlite3.OperationalError:
+        return {
+            key: entry.description
+            for key, entry in self._load_schema_entries(collection).items()
+            if entry.description is not None
+        }
+
+    def _load_schema_entries(self, collection: str) -> Dict[str, SchemaEntry]:
+        """Load the stored ``_schema`` rows for a collection, in stored order.
+
+        The one reader of ``_schema``. A database without the table yields
+        ``{}``; one from before the ``example`` column (opened read-only, so
+        never migrated) reads ``example`` as NULL.
+        """
+        if not self._has_column("_schema", "key_path"):
             return {}
+        example_col = "example" if self._has_column("_schema", "example") else "NULL"
+        rows = self.conn.execute(
+            "SELECT key_path, type, count, sample_values, description, "
+            f"{example_col} FROM _schema WHERE collection = ? ORDER BY rowid",
+            (collection,),
+        ).fetchall()
+        return {
+            row[0]: SchemaEntry(
+                type=row[1],
+                count=row[2],
+                values=json.loads(row[3]) if row[3] is not None else None,
+                example=json.loads(row[5]) if row[5] is not None else None,
+                description=row[4],
+            )
+            for row in rows
+        }
 
     def _save_schema_entries(
         self, collection: str, entries: Dict[str, SchemaEntry]
@@ -378,18 +407,18 @@ class Database:
             "DELETE FROM _schema WHERE collection = ?", (collection,)
         )
         for key, entry in entries.items():
-            sample = entry.values or (
-                [entry.example] if entry.example is not None else []
-            )
             self.conn.execute(
-                "INSERT INTO _schema (collection, key_path, type, count, sample_values, description) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO _schema (collection, key_path, type, count, "
+                "sample_values, description, example) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     collection,
                     key,
                     entry.type,
                     entry.count,
-                    json.dumps(sample) if sample else None,
+                    json.dumps(entry.values) if entry.values is not None else None,
                     entry.description,
+                    json.dumps(entry.example) if entry.example is not None else None,
                 ),
             )
         self.conn.commit()
@@ -495,10 +524,7 @@ class Database:
     def get_schema(self, collection: Optional[str] = None) -> Dict[str, Any]:
         """Get pre-computed schema for one or all collections."""
         if collection:
-            rows = self.conn.execute(
-                "SELECT key_path, type, count, sample_values, description FROM _schema WHERE collection = ?",
-                (collection,),
-            ).fetchall()
+            entries = self._load_schema_entries(collection)
             record_count = self.conn.execute(
                 "SELECT COUNT(*) FROM records WHERE collection = ?",
                 (collection,),
@@ -508,15 +534,19 @@ class Database:
                 "record_count": record_count,
                 "metadata_keys": {},
             }
-            for row in rows:
+            for key, schema_entry in entries.items():
                 entry = {
-                    "type": row[1],
-                    "count": row[2],
-                    "values": json.loads(row[3]) if row[3] else [],
+                    "type": schema_entry.type,
+                    "count": schema_entry.count,
+                    "values": (
+                        schema_entry.values if schema_entry.values is not None else []
+                    ),
                 }
-                if row[4] is not None:
-                    entry["description"] = row[4]
-                result["metadata_keys"][row[0]] = entry
+                if schema_entry.example is not None:
+                    entry["example"] = schema_entry.example
+                if schema_entry.description is not None:
+                    entry["description"] = schema_entry.description
+                result["metadata_keys"][key] = entry
             return result
         else:
             result = {}
@@ -533,18 +563,7 @@ class Database:
 
         Keys in curated but not in data are added with count=0.
         """
-        existing = {}
-        for row in self.conn.execute(
-            "SELECT key_path, type, count, sample_values, description FROM _schema WHERE collection = ?",
-            (collection,),
-        ).fetchall():
-            existing[row[0]] = SchemaEntry(
-                type=row[1],
-                count=row[2],
-                values=json.loads(row[3]) if row[3] else None,
-                description=row[4],
-            )
-
+        existing = self._load_schema_entries(collection)
         merged = merge_schema(existing, curated_keys)
         self._save_schema_entries(collection, merged)
 
@@ -714,16 +733,7 @@ class Database:
                 metadata_keys_dict = auto_schema
             else:
                 # Existing behavior: read from _schema table
-                schema_data = self.get_schema(coll_name)
-                metadata_keys_dict = {
-                    key_name: SchemaEntry(
-                        type=key_info["type"],
-                        count=key_info["count"],
-                        values=key_info.get("values") or None,
-                        description=key_info.get("description"),
-                    )
-                    for key_name, key_info in schema_data.get("metadata_keys", {}).items()
-                }
+                metadata_keys_dict = self._load_schema_entries(coll_name)
             coll_schema = CollectionSchema(
                 record_count=count,
                 metadata_keys=metadata_keys_dict,
