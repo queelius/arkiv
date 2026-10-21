@@ -30,7 +30,18 @@ import tarfile
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import IO, Any, Dict, Iterable, Iterator, Mapping, Optional, Tuple, Union
+from typing import (
+    IO,
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    Mapping,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 
 PathLike = Union[str, Path]
@@ -76,6 +87,37 @@ class _BoundedReader(io.RawIOBase):
 
 def _text(raw: IO[bytes], limit: int) -> IO[str]:
     return io.TextIOWrapper(io.BufferedReader(_BoundedReader(raw, limit)), encoding="utf-8")
+
+
+# A GNU long-name or pax header is read into memory whole before any member
+# is returned, so a few KB of gzip can expand into a header of hundreds of
+# MiB. Real names and pax records are tiny; the cap leaves ample room.
+_MAX_TAR_HEADER_BYTES = 1024 * 1024
+
+
+def _check_header_size(n: int) -> None:
+    if n > _MAX_TAR_HEADER_BYTES:
+        raise ValueError("tar header exceeds the size limit; possible tar bomb")
+
+
+class _CappedTarInfo(tarfile.TarInfo):
+    """A TarInfo that refuses an oversized GNU long-name or pax header before
+    tarfile reads its payload. Overrides tarfile's private header hooks,
+    present from Python 3.8 through 3.13."""
+
+    def _proc_gnulong(self, tarfile):
+        _check_header_size(self.size)
+        return super()._proc_gnulong(tarfile)
+
+    def _proc_pax(self, tarfile):
+        _check_header_size(self.size)
+        return super()._proc_pax(tarfile)
+
+
+def _member_key(name: str) -> str:
+    """The normalized form of a bundle member name (``./a//b`` is ``a/b``),
+    as the extractors and :func:`open_member` both see it."""
+    return PurePosixPath(name).as_posix()
 
 
 def bundle_format(path: PathLike) -> str:
@@ -196,7 +238,7 @@ def _open_tar_gz_for_write(output: Path) -> Iterator[tarfile.TarFile]:
     into it."""
     with open(output, "wb") as raw:
         with gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz:
-            with tarfile.open(fileobj=gz, mode="w") as tf:
+            with tarfile.open(fileobj=gz, mode="w", tarinfo=_CappedTarInfo) as tf:
                 yield tf
 
 
@@ -304,11 +346,11 @@ def open_member(
     wanted = _check_member_name(member)
     with open(path, "rb") as raw, gzip.GzipFile(fileobj=raw) as gz:
         bounded = io.BufferedReader(_BoundedReader(gz, max_bytes))
-        with tarfile.open(fileobj=bounded, mode="r|") as tf:
+        with tarfile.open(fileobj=bounded, mode="r|", tarinfo=_CappedTarInfo) as tf:
             for count, tinfo in enumerate(tf, 1):
                 if count > _MAX_BUNDLE_ENTRIES:
                     raise ValueError(f"{path!s} has too many entries; possible tar bomb")
-                if PurePosixPath(tinfo.name).as_posix() != wanted:
+                if _member_key(tinfo.name) != wanted:
                     continue
                 raw_tar = tf.extractfile(tinfo) if tinfo.isfile() else None
                 if raw_tar is None:
@@ -442,11 +484,32 @@ def unpack_bundle(
             f"unpack_bundle: {bundle!s} has no recognized bundle extension"
         )
     if fmt == "zip":
-        with zipfile.ZipFile(bundle) as zf:
+        with zipfile.ZipFile(bundle) as zf, _extract_errors(bundle):
             _safe_extract_zip(zf, target_dir, max_entries, max_total_bytes)
     else:
-        with tarfile.open(bundle, "r:gz") as tf:
-            _safe_extract_tar(tf, target_dir, max_entries, max_total_bytes)
+        with tarfile.open(bundle, "r:gz", tarinfo=_CappedTarInfo) as tf:
+            with _extract_errors(bundle):
+                _safe_extract_tar(tf, target_dir, max_entries, max_total_bytes)
+
+
+@contextmanager
+def _extract_errors(bundle: Path) -> Iterator[None]:
+    """Report an OS-level extraction failure (a name too long for the
+    filesystem, a full disk, a corrupt stream) as a ValueError, which the
+    CLI prints as an error rather than a traceback."""
+    try:
+        yield
+    except OSError as e:
+        raise ValueError(f"cannot extract {bundle.name}: {e}") from e
+
+
+def _check_unique(key: str, seen: Set[str]) -> None:
+    """Refuse a second member with the same normalized name: extraction
+    would keep the last copy while :func:`open_member` streams the first,
+    so the two would disagree about the archive's content."""
+    if key in seen:
+        raise ValueError(f"bundle has duplicate member {key!r}")
+    seen.add(key)
 
 
 def _safe_extract_zip(
@@ -455,7 +518,7 @@ def _safe_extract_zip(
     max_entries: int,
     max_total_bytes: int,
 ) -> None:
-    """Extract a zip, rejecting path-escape entries and bombs."""
+    """Extract a zip, rejecting path-escape entries, duplicates, and bombs."""
     infos = zf.infolist()
     if len(infos) > max_entries:
         raise ValueError(
@@ -463,12 +526,14 @@ def _safe_extract_zip(
             f"possible zip bomb"
         )
     total = 0
+    seen: Set[str] = set()
     for info in infos:
         dest = target_dir / info.filename
         if not _within(dest, target_dir):
             raise ValueError(
                 f"unsafe zip entry (path escape): {info.filename!r}"
             )
+        _check_unique(_member_key(info.filename), seen)
         total += info.file_size
         if total > max_total_bytes:
             raise ValueError(
@@ -484,37 +549,42 @@ def _safe_extract_tar(
     max_entries: int,
     max_total_bytes: int,
 ) -> None:
-    """Extract a tar, rejecting path-escape entries, escaping links, and bombs."""
-    members = tf.getmembers()
-    if len(members) > max_entries:
-        raise ValueError(
-            f"bundle has too many entries ({len(members)} > {max_entries}); "
-            f"possible tar bomb"
-        )
+    """Extract a tar, rejecting path-escape entries, duplicates, links, and
+    bombs.
+
+    Members are checked as they stream in, so a crafted tar of millions of
+    entries is refused after *max_entries*, not after parsing them all.
+    """
+    checked = []
     total = 0
-    for member in members:
+    seen: Set[str] = set()
+    for i, member in enumerate(tf, 1):
+        if i > max_entries:
+            raise ValueError(
+                f"bundle has too many entries (more than {max_entries}); "
+                f"possible tar bomb"
+            )
         dest = target_dir / member.name
         if not _within(dest, target_dir):
             raise ValueError(
                 f"unsafe tar entry (path escape): {member.name!r}"
             )
-        # No symlinks escaping either
+        # Links are not part of the directory form (and open_member refuses
+        # them too), even one that stays inside the archive.
         if member.issym() or member.islnk():
-            link = target_dir / member.linkname
-            if not _within(link, target_dir):
-                raise ValueError(
-                    f"unsafe tar link target: {member.linkname!r}"
-                )
+            raise ValueError(f"bundle has a link member: {member.name!r}")
+        _check_unique(_member_key(member.name), seen)
         total += member.size
         if total > max_total_bytes:
             raise ValueError(
                 f"bundle uncompressed size exceeds limit "
                 f"({max_total_bytes} bytes); possible tar bomb"
             )
-    # Python 3.12+ accepts filter="data" which also enforces safety; pass it
-    # when available to silence the 3.14 deprecation warning and get native
-    # protection. Our per-member checks above still run as belt-and-suspenders.
-    try:
-        tf.extractall(target_dir, filter="data")
-    except TypeError:
-        tf.extractall(target_dir)
+        checked.append(member)
+    # Where tarfile has extraction filters (3.12+, and late 3.8-3.11 security
+    # releases), filter="data" adds native protection and silences the 3.14
+    # deprecation warning. The checks above run first on every version.
+    if hasattr(tarfile, "data_filter"):
+        tf.extractall(target_dir, members=checked, filter="data")
+    else:
+        tf.extractall(target_dir, members=checked)

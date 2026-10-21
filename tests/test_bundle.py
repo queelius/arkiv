@@ -5,17 +5,23 @@ round-trip through compressed bundles.
 """
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import subprocess
 import sys
 import sqlite3
 import tarfile
+import tracemalloc
+import warnings
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from arkiv.bundle import is_bundle, pack_bundle, unpack_bundle
+
+from .test_bundle_io import tar_gz_with_long_name
 
 
 def run_arkiv(*args):
@@ -164,6 +170,108 @@ class TestDecompressionLimits:
         pack_bundle(src, bundle)
         with pytest.raises(ValueError, match="size|large|bomb"):
             unpack_bundle(bundle, tmp_path / "dst", max_total_bytes=100)
+
+
+def _tar_gz(path, members):
+    """Write a tar.gz of ``(TarInfo, payload-or-None)`` pairs."""
+    with tarfile.open(path, "w:gz") as tf:
+        for info, payload in members:
+            if payload is None:
+                tf.addfile(info)
+            else:
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
+    return path
+
+
+class TestHostileTarMembers:
+    """Tar headers and member types an attacker controls: oversized long-name
+    and pax headers, duplicate names, links, and member counts."""
+
+    @pytest.mark.parametrize("fmt", [tarfile.GNU_FORMAT, tarfile.PAX_FORMAT])
+    def test_unpack_rejects_huge_tar_header(self, tmp_path, fmt):
+        path = tar_gz_with_long_name(tmp_path, 4 * 1024 * 1024, fmt)
+        tracemalloc.start()
+        try:
+            with pytest.raises(ValueError, match="header"):
+                unpack_bundle(path, tmp_path / "dst")
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 3 * 1024 * 1024
+
+    @pytest.mark.parametrize("second", ["records.jsonl", "./records.jsonl"])
+    def test_unpack_refuses_duplicate_tar_members(self, tmp_path, second):
+        bad = _tar_gz(
+            tmp_path / "dup.tar.gz",
+            [
+                (tarfile.TarInfo("records.jsonl"), b'{"n": 1}\n'),
+                (tarfile.TarInfo(second), b'{"n": 2}\n'),
+            ],
+        )
+        dst = tmp_path / "dst"
+        with pytest.raises(ValueError, match="duplicate"):
+            unpack_bundle(bad, dst)
+        assert not (dst / "records.jsonl").exists()
+
+    def test_unpack_refuses_duplicate_zip_members(self, tmp_path):
+        bad = tmp_path / "dup.zip"
+        with zipfile.ZipFile(bad, "w") as zf, warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # zipfile warns on the duplicate
+            zf.writestr("records.jsonl", '{"n": 1}\n')
+            zf.writestr("records.jsonl", '{"n": 2}\n')
+        dst = tmp_path / "dst"
+        with pytest.raises(ValueError, match="duplicate"):
+            unpack_bundle(bad, dst)
+        assert not (dst / "records.jsonl").exists()
+
+    @pytest.mark.parametrize("kind", [tarfile.SYMTYPE, tarfile.LNKTYPE])
+    def test_unpack_refuses_tar_links(self, tmp_path, kind):
+        # Even a link that stays inside the archive: links are not part of
+        # the directory form.
+        link = tarfile.TarInfo("media/latest.jpg")
+        link.type = kind
+        link.linkname = "media/2024.jpg"
+        bad = _tar_gz(
+            tmp_path / "link.tar.gz",
+            [(tarfile.TarInfo("media/2024.jpg"), b"jpeg"), (link, None)],
+        )
+        dst = tmp_path / "dst"
+        with pytest.raises(ValueError, match="link"):
+            unpack_bundle(bad, dst)
+        assert list(dst.iterdir()) == []
+
+    def test_unpack_entry_cap_counts_while_streaming(self, tmp_path):
+        # The fifth member's header is corrupt, so reading every header
+        # upfront fails with a tar read error; a streaming count refuses the
+        # archive at the fourth member and never reaches it.
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tf:
+            for name in ["f0", "f1", "f2", "f3", "g" * 200]:
+                info = tarfile.TarInfo(name)
+                info.size = 1
+                tf.addfile(info, io.BytesIO(b"x"))
+        raw = bytearray(buf.getvalue())
+        with tarfile.open(fileobj=io.BytesIO(bytes(raw))) as tf:
+            header = tf.getmembers()[4].offset_data - tarfile.BLOCKSIZE
+        checksum = slice(header + 148, header + 156)
+        raw[checksum] = b"garbage!"
+        bad = tmp_path / "many.tar.gz"
+        bad.write_bytes(gzip.compress(bytes(raw)))
+        with pytest.raises(ValueError, match="too many entries"):
+            unpack_bundle(bad, tmp_path / "dst", max_entries=3)
+
+    @pytest.mark.parametrize("ext", ["zip", "tar.gz"])
+    def test_unpack_overlong_path_component_is_value_error(self, tmp_path, ext):
+        name = "c" * 300  # one component, over the OS's 255-byte limit
+        bad = tmp_path / f"long.{ext}"
+        if ext == "zip":
+            with zipfile.ZipFile(bad, "w") as zf:
+                zf.writestr(name, "x")
+        else:
+            _tar_gz(bad, [(tarfile.TarInfo(name), b"x")])
+        with pytest.raises(ValueError, match="cannot extract long"):
+            unpack_bundle(bad, tmp_path / "dst")
 
 
 # ── CLI integration tests ──────────────────────────────────────

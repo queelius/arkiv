@@ -9,6 +9,7 @@ import io
 import json
 import tarfile
 import time
+import tracemalloc
 import zipfile
 
 import pytest
@@ -20,6 +21,7 @@ from arkiv import (
     pack_bundle,
     peek_jsonl,
     records_to_jsonl,
+    unpack_bundle,
     write_bundle,
 )
 
@@ -291,3 +293,47 @@ def test_only_the_root_database_is_derived(tmp_path):
     assert [rel for rel, _ in iter_source_files(src)] == [
         "media/scan.sqlite", "media/viewer.db", "records.jsonl",
     ]
+
+
+def tar_gz_with_long_name(tmp_path, name_len, fmt):
+    """A tar.gz whose one member has a *name_len*-character name, which
+    tarfile writes as a GNU long-name header or a pax header by *fmt*. A
+    huge name compresses to a few KB but would decompress to a header that
+    tarfile reads into memory whole."""
+    out = tmp_path / f"longname-{fmt}.tar.gz"
+    data = records_to_jsonl(RECORDS)
+    with tarfile.open(out, "w:gz", format=fmt) as tf:
+        info = tarfile.TarInfo("n" * name_len)
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    return out
+
+
+class TestHostileTarHeaders:
+    @pytest.mark.parametrize("fmt", [tarfile.GNU_FORMAT, tarfile.PAX_FORMAT])
+    def test_iter_jsonl_rejects_huge_tar_header(self, tmp_path, fmt):
+        path = tar_gz_with_long_name(tmp_path, 4 * 1024 * 1024, fmt)
+        tracemalloc.start()
+        try:
+            with pytest.raises(ValueError, match="header"):
+                list(iter_jsonl(path, "records.jsonl"))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 3 * 1024 * 1024
+
+    @pytest.mark.parametrize("fmt", [tarfile.GNU_FORMAT, tarfile.PAX_FORMAT])
+    def test_ordinary_long_member_name_still_reads(self, tmp_path, fmt):
+        # Several components, each under the OS's 255-byte limit.
+        name = "/".join(["d" * 95, "e" * 95, "f" * 95, "records.jsonl"])
+        assert len(name) >= 300
+        out = tmp_path / "long.tar.gz"
+        data = records_to_jsonl(RECORDS)
+        with tarfile.open(out, "w:gz", format=fmt) as tf:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        assert list(iter_jsonl(out, name)) == RECORDS
+        dst = tmp_path / "dst"
+        unpack_bundle(out, dst)
+        assert (dst / name).read_bytes() == data
