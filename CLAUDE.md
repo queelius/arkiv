@@ -264,6 +264,16 @@ string and must be bumped together. Each release also updates
 separate version (currently `"0.2"`) tracking the on-disk format
 spec, not the package release.
 
+Before a release, run the full suite on 3.12 (the dev venv), 3.10 (the
+`arkiv[mcp]` floor), and 3.8 (the runtime floor); behaviour differs
+across that range (for example `sqlite3.set_authorizer(None)` before
+3.11):
+
+```bash
+uv run --no-project --python 3.10 --with-editable . --with pytest python -m pytest -q
+uv run --no-project --python 3.8 --with-editable . --with pytest python -m pytest -q
+```
+
 ## Further Reading
 
 - `docs/PHILOSOPHY.md` -- two-axis durability model, why bundles are
