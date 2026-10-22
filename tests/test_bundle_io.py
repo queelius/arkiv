@@ -700,6 +700,29 @@ class TestWriteBundleNames:
         with pytest.raises(ValueError, match="duplicate"):
             write_bundle(tmp_path / "x.zip", {"a//b": b"1", "a/b": b"2"})
 
+    @pytest.mark.parametrize("name", ["out", "out.zip", "out.tar.gz"])
+    @pytest.mark.parametrize(
+        "pair",
+        [("records.jsonl", "Records.jsonl"), ("caf\u00e9", "cafe\u0301")],
+    )
+    def test_names_that_collide_on_case_insensitive_filesystems(
+        self, tmp_path, name, pair
+    ):
+        with pytest.raises(ValueError, match="duplicate"):
+            write_bundle(tmp_path / name, dict.fromkeys(pair, b"1"))
+        assert not (tmp_path / name).exists()
+
+    def test_names_with_nul_are_refused(self, tmp_path):
+        # zipfile truncates a name at NUL: both would be written as "a".
+        with pytest.raises(ValueError, match="invalid bundle member name"):
+            write_bundle(tmp_path / "x.zip", {"a\0x": b"1", "a\0y": b"2"})
+        assert not (tmp_path / "x.zip").exists()
+
+    def test_case_is_kept_in_written_names(self, tmp_path):
+        out = tmp_path / "x.zip"
+        write_bundle(out, {"README.md": b"1", "Media/A.bin": b"2"})
+        assert zipfile.ZipFile(out).namelist() == ["Media/A.bin", "README.md"]
+
     @pytest.mark.parametrize("bad", ["../x", "/abs", "a/../b", "a\\b", ""])
     def test_names_unpack_would_refuse_are_refused_at_write(self, tmp_path, bad):
         with pytest.raises(ValueError, match="invalid bundle member name"):

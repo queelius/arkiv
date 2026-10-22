@@ -29,6 +29,7 @@ import os
 import secrets
 import shutil
 import tarfile
+import unicodedata
 import zipfile
 import zlib
 from contextlib import contextmanager
@@ -219,6 +220,15 @@ def _member_key(name: str) -> str:
     return PurePosixPath(name).as_posix()
 
 
+def _collision_key(key: str) -> str:
+    """The key two member names must not share. Case-insensitive (APFS,
+    NTFS) and normalization-insensitive (APFS) filesystems store
+    ``records.jsonl`` and ``Records.jsonl``, or composed and decomposed
+    ``é``, as one file, so extracting both would let the second overwrite
+    the first. Only uniqueness folds; names are written as given."""
+    return unicodedata.normalize("NFC", key).casefold()
+
+
 def bundle_format(path: PathLike) -> str:
     """Classify *path* as an arkiv container: ``"zip"``, ``"tar.gz"``,
     ``"jsonl.gz"``, ``"jsonl"``, or ``"dir"``.
@@ -360,9 +370,10 @@ def _atomic_output(path: Path) -> Iterator[Path]:
 
 
 def _check_member_name(name: str) -> str:
-    """Reject member names that are absolute or climb out of the archive."""
+    """Reject member names that are absolute, climb out of the archive, or
+    hold a backslash or NUL (zipfile truncates a name at NUL)."""
     p = PurePosixPath(name)
-    if not name or p.is_absolute() or ".." in p.parts or "\\" in name:
+    if not name or p.is_absolute() or ".." in p.parts or "\\" in name or "\0" in name:
         raise ValueError(f"invalid bundle member name: {name!r}")
     return _member_key(name)
 
@@ -381,10 +392,12 @@ def write_bundle(path: PathLike, members: Mapping[str, bytes]) -> None:
     if fmt not in ("dir", "zip", "tar.gz"):
         raise ValueError(f"write_bundle: cannot write a bundle as {fmt!r}: {path!s}")
     unique: Dict[str, bytes] = {}
+    seen: Set[str] = set()
     for n, data in members.items():
         key = _check_member_name(n)
-        if key in unique:
+        if _collision_key(key) in seen:
             raise ValueError(f"duplicate bundle member name after normalization: {n!r}")
+        seen.add(_collision_key(key))
         unique[key] = data
     named = sorted(unique.items())
     if fmt == "dir":
@@ -642,12 +655,15 @@ def _extract_errors(bundle: Path) -> Iterator[None]:
 
 
 def _check_unique(key: str, seen: Set[str]) -> None:
-    """Refuse a second member with the same normalized name: extraction
-    would keep the last copy while :func:`open_member` streams the first,
-    so the two would disagree about the archive's content."""
-    if key in seen:
+    """Refuse a second member with the same normalized name, compared as a
+    case- and normalization-insensitive filesystem would (see
+    :func:`_collision_key`): extraction would keep the last copy while
+    :func:`open_member` streams the first, so the two would disagree about
+    the archive's content."""
+    folded = _collision_key(key)
+    if folded in seen:
         raise ValueError(f"bundle has duplicate member {key!r}")
-    seen.add(key)
+    seen.add(folded)
 
 
 def _safe_extract_zip(

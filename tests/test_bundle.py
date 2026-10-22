@@ -225,6 +225,32 @@ class TestHostileTarMembers:
             unpack_bundle(bad, dst)
         assert not (dst / "records.jsonl").exists()
 
+    def test_unpack_refuses_tar_members_differing_only_in_case(self, tmp_path):
+        # On a case-insensitive filesystem (APFS, NTFS) the second would
+        # overwrite the first, which iter_jsonl reads.
+        bad = _tar_gz(
+            tmp_path / "case.tar.gz",
+            [
+                (tarfile.TarInfo("records.jsonl"), b'{"n": "GOOD"}\n'),
+                (tarfile.TarInfo("Records.jsonl"), b'{"n": "EVIL"}\n'),
+            ],
+        )
+        dst = tmp_path / "dst"
+        with pytest.raises(ValueError, match="duplicate"):
+            unpack_bundle(bad, dst)
+        assert not (dst / "records.jsonl").exists()
+
+    def test_unpack_refuses_zip_members_differing_only_in_normalization(self, tmp_path):
+        composed, decomposed = "caf\u00e9.jsonl", "cafe\u0301.jsonl"
+        bad = tmp_path / "nfd.zip"
+        with zipfile.ZipFile(bad, "w") as zf:
+            zf.writestr(composed, '{"n": 1}\n')
+            zf.writestr(decomposed, '{"n": 2}\n')
+        dst = tmp_path / "dst"
+        with pytest.raises(ValueError, match="duplicate"):
+            unpack_bundle(bad, dst)
+        assert not (dst / composed).exists()
+
     @pytest.mark.parametrize("kind", [tarfile.SYMTYPE, tarfile.LNKTYPE])
     def test_unpack_refuses_tar_links(self, tmp_path, kind):
         # Even a link that stays inside the archive: links are not part of

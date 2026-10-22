@@ -33,7 +33,10 @@ clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
   instead of opening, and creating, a different file.
 - S5: duplicate tar and zip members are refused on unpack, as are tar
   hard and symbolic links, FIFOs, and devices, so `iter_jsonl` and
-  `convert` can no longer disagree about an archive's content.
+  `convert` can no longer disagree about an archive's content. Names
+  that differ only in case or Unicode normalization (`records.jsonl` and
+  `Records.jsonl`) count as duplicates, since a case-insensitive
+  filesystem (APFS, NTFS) stores them as one file.
 - S6: MCP `sql_query` aborts after 10 seconds (an infinite recursive CTE
   no longer hangs the server) and cuts any text or blob cell over 100000
   characters.
@@ -115,7 +118,9 @@ clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
   absolute, or uses backslashes; when a member is duplicated; when a tar
   member is a link, special file, or sparse file; and when tar headers
   are oversized or chained. `write_bundle` refuses the member names that
-  unpack would refuse.
+  unpack would refuse, names holding NUL (which zipfile truncates), and
+  names that collide ignoring case or Unicode normalization; it still
+  writes each name with its own case.
 - MCP `sql_query` has a time limit and a cell-size limit; a cut cell is
   reported as `cells_truncated`.
 - `get_schema` entries may carry `example` for high-cardinality keys.

@@ -158,10 +158,13 @@ This matters because bundles may come from untrusted sources.
 Extraction hardening, applied by both extractors (and by `open_member`
 where noted):
 - Every member name goes through `_check_member_name()`: names that are
-  empty, absolute, contain a `..` part, or contain a backslash are refused,
-  and the normalized name is the duplicate key (`_check_unique()`), so
-  `x/../records.jsonl` or a repeated member cannot make `convert` and
-  `iter_jsonl` see different data.
+  empty, absolute, contain a `..` part, or contain a backslash or NUL are
+  refused, and the normalized name, NFC-normalized and case-folded
+  (`_collision_key()`), is the duplicate key (`_check_unique()`), so
+  `x/../records.jsonl`, a repeated member, or `Records.jsonl` beside
+  `records.jsonl` (one file on APFS or NTFS) cannot make `convert` and
+  `iter_jsonl` see different data. Only the key folds; names are written
+  as given.
 - Tar: link members (hard or symbolic, even inside the archive), FIFOs,
   devices, and every sparse variant are refused; only regular files and
   directories are extracted. Members stream in, so the entry cap applies
