@@ -887,7 +887,7 @@ class Database:
         """
         source_dir = Path(source_dir)
         readme = source_dir / "README.md"
-        if readme.exists():
+        if readme.is_file():
             return self.import_readme(readme)
         jsonls = sorted(
             (rel, path)
@@ -916,6 +916,9 @@ class Database:
         from .schema import load_schema_yaml
 
         readme_path = Path(readme_path)
+        # The README itself can be a symlink to a host file; its text would
+        # land in _metadata and travel on in every export.
+        _require_inside(readme_path, readme_path.parent)
         readme = parse_readme(readme_path)
         base_dir = readme_path.parent
 

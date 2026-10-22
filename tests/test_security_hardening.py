@@ -386,6 +386,19 @@ class TestSidecarFilesStayInsideArchive:
         r = run_arkiv("convert", str(archive))
         _assert_clean_cli_error(r, "must stay inside the archive")
 
+    def test_root_readme_symlink_escape_rejected(self, tmp_path):
+        secret = tmp_path / "secret"
+        secret.mkdir()
+        (secret / "creds.txt").write_text("---\nname: x\n---\nTOP-SECRET-CREDS\n")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        (archive / "c.jsonl").write_text('{"content": "x"}\n')
+        _symlink_or_skip(secret / "creds.txt", archive / "README.md")
+        r = run_arkiv("convert", str(archive))
+        _assert_clean_cli_error(r, "must stay inside the archive")
+        db_path = archive / "arkiv.db"
+        assert not db_path.exists() or b"TOP-SECRET" not in db_path.read_bytes()
+
     def test_nested_readme_symlink_escape_rejected(self, tmp_path):
         secret = _secret_file(tmp_path)
         outside = tmp_path / "outside-readme.md"

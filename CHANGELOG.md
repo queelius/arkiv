@@ -15,10 +15,11 @@ clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
 
 ### Security
 
-- S1: README `contents` entries (and `schema.yaml` and nested README
-  files) that are absolute, contain `..` or a backslash, or resolve
-  outside the archive are refused, so a crafted archive can no longer
-  import arbitrary `.jsonl` files from the host.
+- S1: README `contents` entries (and `schema.yaml`, nested README files,
+  and the archive's own `README.md`) that are absolute, contain `..` or a
+  backslash, or resolve outside the archive are refused, so a crafted
+  archive can no longer import arbitrary `.jsonl` files, or the text of
+  any host file, from the host.
 - S2: symlinks under `media/` (including a symlinked `media/` itself) are
   never followed or imported, so host files cannot land in the database
   and then in exported bundles. Directory import, the source fingerprint,
