@@ -1,8 +1,9 @@
 """Schema discovery for JSONL metadata."""
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import yaml
 
@@ -156,13 +157,63 @@ def discover_schema(path: Union[str, Path]) -> Dict[str, SchemaEntry]:
     )
 
 
+def _is_optional_str(value: Any) -> bool:
+    return value is None or isinstance(value, str)
+
+
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_json(value: Any) -> bool:
+    """True if ``value`` can be stored as JSON (YAML dates, anchors that
+    make a list contain itself, and the like cannot)."""
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _is_optional_values(value: Any) -> bool:
+    return value is None or (isinstance(value, list) and _is_json(value))
+
+
+# Each curated SchemaEntry field: (validator, value used when it is absent or
+# fails the validator). schema.yaml is untrusted, curatable input, so a
+# wrongly typed field is dropped rather than failing the import or reaching
+# the database.
+_CURATED_FIELDS: Dict[str, Tuple[Callable[[Any], bool], Any]] = {
+    "type": (_is_optional_str, "string"),
+    "count": (_is_count, 0),
+    "values": (_is_optional_values, None),
+    "example": (_is_json, None),
+    "description": (_is_optional_str, None),
+}
+
+
+def _curated_entry(key_data: Dict[str, Any]) -> SchemaEntry:
+    fields = {}
+    for name, (valid, default) in _CURATED_FIELDS.items():
+        value = key_data.get(name, default)
+        fields[name] = value if valid(value) else default
+    return SchemaEntry(**fields)
+
+
 def load_schema_yaml(path: Union[str, Path]) -> Dict[str, CollectionSchema]:
     """Load schema.yaml into collection schemas.
 
-    Returns a dict mapping collection name to CollectionSchema.
+    Returns a dict mapping collection name to CollectionSchema. Invalid YAML
+    raises ``ValueError``. Permissive otherwise: a collection or key that is
+    not a mapping is skipped, and a wrongly typed field (a non-string
+    ``description`` or ``type``, a non-integer ``count`` or
+    ``record_count``, a non-list ``values``) is dropped as if absent.
     """
     path = Path(path)
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise ValueError(f"invalid YAML in {path}: {e}") from None
     if not isinstance(data, dict):
         return {}
 
@@ -171,17 +222,16 @@ def load_schema_yaml(path: Union[str, Path]) -> Dict[str, CollectionSchema]:
         if not isinstance(coll_data, dict):
             continue
         record_count = coll_data.get("record_count", 0)
-        keys = {}
-        for key_name, key_data in coll_data.get("metadata_keys", {}).items():
-            if not isinstance(key_data, dict):
-                continue
-            keys[key_name] = SchemaEntry(
-                type=key_data.get("type", "string"),
-                count=key_data.get("count", 0),
-                values=key_data.get("values"),
-                example=key_data.get("example"),
-                description=key_data.get("description"),
-            )
+        if not _is_count(record_count):
+            record_count = 0
+        key_items = coll_data.get("metadata_keys")
+        if not isinstance(key_items, dict):
+            key_items = {}
+        keys = {
+            key_name: _curated_entry(key_data)
+            for key_name, key_data in key_items.items()
+            if isinstance(key_data, dict)
+        }
         result[coll_name] = CollectionSchema(
             record_count=record_count, metadata_keys=keys
         )

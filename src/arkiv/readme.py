@@ -46,12 +46,18 @@ def split_frontmatter(text: str) -> Tuple[str, str]:
 
 
 def parse_readme(path: Union[str, Path]) -> Readme:
-    """Parse a README.md with YAML frontmatter."""
+    """Parse a README.md with YAML frontmatter.
+
+    Invalid YAML in the frontmatter raises ``ValueError``.
+    """
     path = Path(path)
     text = path.read_text(encoding="utf-8")
     fm_str, body = split_frontmatter(text)
 
-    frontmatter = yaml.safe_load(fm_str) if fm_str else {}
+    try:
+        frontmatter = yaml.safe_load(fm_str) if fm_str else {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"invalid YAML in {path}: {e}") from None
     if not isinstance(frontmatter, dict):
         frontmatter = {}
 

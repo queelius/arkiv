@@ -1060,3 +1060,176 @@ def test_query_multiple_statements_is_a_clean_error(tmp_path):
     assert r.returncode == 1, r.stderr
     assert "Error:" in r.stderr
     assert "Traceback" not in r.stderr
+
+
+def _assert_clean_error(r, needle):
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    assert "Error:" in r.stderr and needle in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr
+
+
+def _archive(root, readme=None, schema=None):
+    root.mkdir()
+    (root / "c.jsonl").write_text('{"content": "x", "metadata": {"k": "v"}}\n')
+    if readme is None:
+        readme = "---\ncontents:\n- path: c.jsonl\n---\n"
+    (root / "README.md").write_text(readme)
+    if schema is not None:
+        (root / "schema.yaml").write_text(schema)
+    return root
+
+
+def _crafted_db(path, statements):
+    import sqlite3
+
+    from arkiv.database import Database
+
+    Database(path).close()
+    conn = sqlite3.connect(str(path))
+    for sql, params in statements:
+        conn.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+
+class TestMalformedInputCleanErrors:
+    """Hostile or broken archives must reach the user as `Error: ...`."""
+
+    def test_bad_yaml_in_readme_frontmatter(self, tmp_path):
+        a = _archive(tmp_path / "a", readme="---\ncontents: [unclosed\n---\n")
+        _assert_clean_error(run_arkiv("convert", str(a)), "invalid YAML")
+
+    def test_bad_yaml_in_schema_yaml(self, tmp_path):
+        a = _archive(tmp_path / "a", schema="c: {metadata_keys: [\n")
+        _assert_clean_error(run_arkiv("convert", str(a)), "invalid YAML")
+
+    def test_bad_yaml_in_schema_yaml_on_detect(self, tmp_path):
+        a = _archive(tmp_path / "a", schema="c: {metadata_keys: [\n")
+        r = run_arkiv("detect", str(a / "c.jsonl"))
+        _assert_clean_error(r, "invalid YAML")
+
+    def test_bad_yaml_in_stored_frontmatter(self, tmp_path):
+        db = tmp_path / "x.db"
+        _crafted_db(
+            db,
+            [
+                (
+                    "INSERT INTO _metadata (key, value) VALUES (?, ?)",
+                    ("readme_frontmatter", "contents: [unclosed\n"),
+                )
+            ],
+        )
+        r = run_arkiv("convert", str(db), str(tmp_path / "out"))
+        _assert_clean_error(r, "invalid YAML")
+
+    @pytest.mark.parametrize("contents", ["5", "path: c.jsonl", "'c.jsonl'"])
+    def test_non_list_contents(self, tmp_path, contents):
+        a = _archive(tmp_path / "a", readme=f"---\ncontents: {contents}\n---\n")
+        _assert_clean_error(run_arkiv("convert", str(a)), "contents")
+
+    def test_non_list_contents_in_nested_readme(self, tmp_path):
+        a = _archive(tmp_path / "a", readme="---\ncontents:\n- path: sub/\n---\n")
+        (a / "sub").mkdir()
+        (a / "sub" / "README.md").write_text("---\ncontents: 5\n---\n")
+        _assert_clean_error(run_arkiv("convert", str(a)), "contents")
+
+    def test_null_contents_is_empty(self, tmp_path):
+        a = _archive(tmp_path / "a", readme="---\ncontents:\nname: x\n---\n")
+        r = run_arkiv("convert", str(a))
+        assert r.returncode == 0, r.stderr
+        assert "(0 records)" in r.stdout
+        r = run_arkiv("convert", str(a / "arkiv.db"), str(tmp_path / "out"))
+        assert r.returncode == 0, r.stderr
+        from arkiv.server import ArkivServer
+
+        srv = ArkivServer(a / "arkiv.db")
+        assert srv.get_manifest()["collections"] == []
+        srv.close()
+
+    def test_schema_yaml_metadata_keys_without_value(self, tmp_path):
+        a = _archive(tmp_path / "a", schema="c:\n  record_count: 1\n  metadata_keys:\n")
+        r = run_arkiv("convert", str(a))
+        assert r.returncode == 0, r.stderr
+
+    def test_schema_yaml_badly_typed_fields_are_dropped(self, tmp_path):
+        schema = (
+            "c:\n"
+            "  record_count: lots\n"
+            "  metadata_keys:\n"
+            "    k:\n"
+            "      description: {a: 1}\n"
+            "      type: [string]\n"
+            "      count: many\n"
+            "      values: notalist\n"
+            "    gone:\n"
+            "      description: [x]\n"
+            "      type: {t: 1}\n"
+            "      count: 1.5\n"
+            "      values: [2024-01-01]\n"
+        )
+        a = _archive(tmp_path / "a", schema=schema)
+        r = run_arkiv("convert", str(a))
+        assert r.returncode == 0, r.stderr
+        r = run_arkiv("schema", str(a / "arkiv.db"))
+        assert r.returncode == 0, r.stderr
+        keys = json.loads(r.stdout)["c"]["metadata_keys"]
+        assert "description" not in keys["k"]
+        assert keys["k"]["type"] == "string"
+        assert keys["k"]["values"] == ["v"]
+        assert keys["gone"]["type"] == "string"
+        assert keys["gone"]["values"] == []
+        assert "description" not in keys["gone"]
+
+    def test_readme_md_directory_is_not_a_readme(self, tmp_path):
+        a = tmp_path / "a"
+        a.mkdir()
+        (a / "c.jsonl").write_text('{"content": "x"}\n')
+        (a / "README.md").mkdir()
+        r = run_arkiv("convert", str(a))
+        assert r.returncode == 0, r.stderr
+        assert "(1 records)" in r.stdout
+
+    def test_schema_yaml_directory_is_ignored(self, tmp_path):
+        a = _archive(tmp_path / "a")
+        (a / "schema.yaml").mkdir()
+        r = run_arkiv("convert", str(a))
+        assert r.returncode == 0, r.stderr
+
+    def test_nested_readme_and_schema_directories_are_ignored(self, tmp_path):
+        a = _archive(tmp_path / "a", readme="---\ncontents:\n- path: sub/\n---\n")
+        (a / "sub" / "README.md").mkdir(parents=True)
+        r = run_arkiv("convert", str(a))
+        assert r.returncode == 0, r.stderr
+        (a / "sub" / "README.md").rmdir()
+        (a / "sub" / "README.md").write_text("---\ncontents:\n- path: s.jsonl\n---\n")
+        (a / "sub" / "s.jsonl").write_text('{"content": "s"}\n')
+        (a / "sub" / "schema.yaml").mkdir()
+        r = run_arkiv("convert", str(a))
+        assert r.returncode == 0, r.stderr
+        assert "(1 records)" in r.stdout
+
+    def test_schema_yaml_directory_inside_zip(self, tmp_path):
+        import zipfile
+
+        z = tmp_path / "b.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("README.md", "---\ncontents:\n- path: c.jsonl\n---\n")
+            zf.writestr("c.jsonl", '{"content": "x"}\n')
+            zf.writestr("schema.yaml/", "")
+        r = run_arkiv("convert", str(z), str(tmp_path / "x.db"))
+        assert r.returncode == 0, r.stderr
+
+    def test_crafted_asset_rows_that_collide_on_export(self, tmp_path):
+        db = tmp_path / "x.db"
+        record = "INSERT INTO records (collection, content) VALUES (?, ?)"
+        asset = "INSERT INTO _assets (path, content) VALUES (?, ?)"
+        _crafted_db(
+            db,
+            [
+                (record, ("c", "x")),
+                (asset, ("media/a", b"1")),
+                (asset, ("media/a/b", b"2")),
+            ],
+        )
+        r = run_arkiv("convert", str(db), str(tmp_path / "out"))
+        _assert_clean_error(r, "cannot write asset")

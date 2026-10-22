@@ -439,7 +439,7 @@ def cmd_detect(args):
     # Schema validation: check sibling schema.yaml if present
     schema_checks = []
     schema_yaml_path = input_path.parent / "schema.yaml"
-    if schema_yaml_path.exists():
+    if schema_yaml_path.is_file():
         from .schema import discover_schema, load_schema_yaml
 
         curated = load_schema_yaml(schema_yaml_path)

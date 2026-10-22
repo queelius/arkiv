@@ -110,6 +110,23 @@ def _is_media_asset_path(rel: Any) -> bool:
     return len(components) >= 2 and components[0] == _MEDIA_DIRNAME
 
 
+def _contents_entries(frontmatter: Dict[str, Any], readme_path: Path) -> List[Any]:
+    """The ``contents`` list of a README's frontmatter.
+
+    Absent or null is an empty list; anything else that is not a list (a
+    number, a mapping, a bare string) is refused rather than iterated.
+    """
+    contents = frontmatter.get("contents")
+    if contents is None:
+        return []
+    if not isinstance(contents, list):
+        raise ValueError(
+            f"README contents must be a list, not {type(contents).__name__}: "
+            f"{readme_path}"
+        )
+    return contents
+
+
 def _validate_collection_name(name):
     """Validate a collection name is safe for use as a file/directory name."""
     if not isinstance(name, str) or not name or not name.strip():
@@ -609,7 +626,13 @@ class Database:
 
         frontmatter = {}
         if "readme_frontmatter" in meta:
-            fm = yaml.safe_load(meta["readme_frontmatter"])
+            try:
+                fm = yaml.safe_load(meta["readme_frontmatter"])
+            except yaml.YAMLError as e:
+                raise ValueError(
+                    f"invalid YAML in the README frontmatter stored in "
+                    f"{self.path}: {e}"
+                ) from None
             if isinstance(fm, dict):
                 frontmatter = fm
 
@@ -663,7 +686,8 @@ class Database:
         stored_contents_map = {}
         stored_order = []
         if stored_readme:
-            for item in stored_readme.frontmatter.get("contents", []):
+            # A null contents imports as empty, so it can be stored that way.
+            for item in stored_readme.frontmatter.get("contents") or []:
                 if isinstance(item, dict) and "path" in item:
                     stored_contents_map[item["path"]] = item
                     # Extract collection name from stored path (strip .jsonl or trailing /)
@@ -850,8 +874,12 @@ class Database:
                 raise ValueError(
                     f"unsafe asset path (escapes {_MEDIA_DIRNAME}/): {rel!r}"
                 )
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(content if content is not None else b"")
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(content if content is not None else b"")
+            except OSError as e:
+                # Rows like media/a and media/a/b cannot both be written.
+                raise ValueError(f"cannot write asset {rel!r}: {e}") from None
 
     def import_assets(self, source_dir: Union[str, Path]) -> int:
         """Slurp an archive's ``media/`` subtree into the ``_assets`` table.
@@ -933,13 +961,13 @@ class Database:
         seen: Dict[str, Path] = {}
 
         total = 0
-        for item in readme.frontmatter.get("contents", []):
+        for item in _contents_entries(readme.frontmatter, readme_path):
             if not isinstance(item, dict) or "path" not in item:
                 continue
             entry_path = _resolve_contents_entry(base_dir, base_dir, item["path"])
             if entry_path.is_dir():
                 sub_readme = entry_path / "README.md"
-                if sub_readme.exists():
+                if sub_readme.is_file():
                     _require_inside(sub_readme, base_dir)
                     total += self._import_nested_readme(sub_readme, seen, base_dir)
             elif entry_path.suffix == ".jsonl" and entry_path.exists():
@@ -947,7 +975,7 @@ class Database:
 
         # Merge curated schema if schema.yaml exists
         schema_yaml_path = base_dir / "schema.yaml"
-        if schema_yaml_path.exists():
+        if schema_yaml_path.is_file():
             _require_inside(schema_yaml_path, base_dir)
             curated = load_schema_yaml(schema_yaml_path)
             for coll_name, coll_schema in curated.items():
@@ -1007,7 +1035,7 @@ class Database:
         base_dir = readme_path.parent
         total = 0
 
-        for item in sub_readme.frontmatter.get("contents", []):
+        for item in _contents_entries(sub_readme.frontmatter, readme_path):
             if not isinstance(item, dict) or "path" not in item:
                 continue
             entry_path = _resolve_contents_entry(base_dir, archive_root, item["path"])
@@ -1016,7 +1044,7 @@ class Database:
 
         # Merge per-collection schema.yaml if present
         schema_yaml_path = base_dir / "schema.yaml"
-        if schema_yaml_path.exists():
+        if schema_yaml_path.is_file():
             _require_inside(schema_yaml_path, archive_root)
             curated = load_schema_yaml(schema_yaml_path)
             for coll_name, coll_schema in curated.items():

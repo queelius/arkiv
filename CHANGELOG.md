@@ -75,6 +75,13 @@ clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
   the strings `"nan"`, `"inf"`, `"-inf"` instead of the non-JSON `NaN`.
 - C13: `pack_bundle` builds tar member names as POSIX paths, so they are
   not backslashed on Windows.
+- Malformed archives no longer end in a traceback. Invalid YAML in README
+  frontmatter (in the archive or stored in a database) or in
+  `schema.yaml`, a README `contents` that is not a list, and, on export,
+  asset rows that cannot both be written (`media/a` and `media/a/b`)
+  report `Error: ...`. A `metadata_keys:` with no value, wrongly typed
+  `schema.yaml` fields, and a `README.md` or `schema.yaml` that is a
+  directory now import cleanly (see Changed).
 - On Python 3.8 to 3.10, one query (MCP `sql_query`, `arkiv query`,
   `Database.query`) no longer leaves the connection denying every later
   statement, so `get_schema`, `get_manifest`, and `write_record` keep
@@ -114,6 +121,13 @@ clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
 - `get_schema` entries may carry `example` for high-cardinality keys.
   Older databases are migrated when opened writable and read as `null`
   when opened read-only.
+- A README `contents` that is not a list (a number, a mapping, a bare
+  string, which 0.4.0 iterated character by character) is an error; a
+  null `contents` is empty.
+- Wrongly typed `schema.yaml` fields are dropped as if absent: a
+  `description` or `type` that is not a string, a `count` or
+  `record_count` that is not an integer, a `values` that is not a list.
+- A `README.md` or `schema.yaml` that is a directory is ignored.
 - Test coverage now measures the CLI subprocesses (`coverage>=7.10` in
   the dev extra).
 

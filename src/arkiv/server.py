@@ -40,7 +40,7 @@ class ArkivServer:
         info = self.db.get_info()
         collections = []
         content_desc = {}
-        for item in fm.get("contents", []):
+        for item in fm.get("contents") or []:
             if isinstance(item, dict) and "path" in item:
                 content_desc[Path(item["path"]).stem] = item.get("description")
 
