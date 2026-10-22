@@ -193,6 +193,30 @@ class TestMediaSymlinksNotImported:
         _roundtrip(archive, out)
         assert not (out / "media" / "pic.png").exists()
 
+    def test_symlinked_subdirectory_partway_down_is_not_imported(self, tmp_path):
+        secret = tmp_path / "secret"
+        secret.mkdir()
+        (secret / "key").write_bytes(b"TOP SECRET")
+        archive = _make_archive(tmp_path)
+        (archive / "media").mkdir()
+        (archive / "media" / "real.bin").write_bytes(b"real")
+        _symlink_or_skip(secret, archive / "media" / "sub")
+        out = tmp_path / "out"
+        _roundtrip(archive, out)
+        assert (out / "media" / "real.bin").read_bytes() == b"real"
+        assert not (out / "media" / "sub").exists()
+        assert b"TOP SECRET" not in (archive / "arkiv.db").read_bytes()
+
+    def test_dangling_media_symlink_is_skipped(self, tmp_path):
+        archive = _make_archive(tmp_path)
+        (archive / "media").mkdir()
+        (archive / "media" / "real.bin").write_bytes(b"real")
+        _symlink_or_skip(tmp_path / "does-not-exist", archive / "media" / "gone.bin")
+        out = tmp_path / "out"
+        _roundtrip(archive, out)
+        assert (out / "media" / "real.bin").read_bytes() == b"real"
+        assert not (out / "media" / "gone.bin").exists()
+
     def test_internal_symlink_skipped_real_file_kept(self, tmp_path):
         archive = _make_archive(tmp_path)
         (archive / "media").mkdir()
