@@ -1233,3 +1233,37 @@ class TestMalformedInputCleanErrors:
         )
         r = run_arkiv("convert", str(db), str(tmp_path / "out"))
         _assert_clean_error(r, "cannot write asset")
+
+
+BOM = "\ufeff"
+
+
+def test_detect_reads_bom_prefixed_jsonl(tmp_path):
+    f = tmp_path / "c.jsonl"
+    f.write_text(BOM + '{"content": "a"}\n{"content": "b"}\n', encoding="utf-8")
+    r = run_arkiv("detect", str(f))
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["valid_jsonl"] is True
+    assert out["total_records"] == 2
+    assert out["warnings"] == []
+
+
+def test_fix_reads_bom_prefixed_jsonl_and_keeps_the_bom(tmp_path):
+    f = tmp_path / "c.jsonl"
+    f.write_text(BOM + '{"url": "x://1"}\n{"url": "x://2"}\n', encoding="utf-8")
+    r = run_arkiv("fix", str(f))
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["fixed"] == 2
+    text = f.read_text(encoding="utf-8")
+    assert text.startswith(BOM)
+    first = json.loads(text[1:].splitlines()[0])
+    assert first["uri"] == "x://1"
+
+
+def test_fix_does_not_add_a_bom(tmp_path):
+    f = tmp_path / "c.jsonl"
+    f.write_text('{"url": "x://1"}\n', encoding="utf-8")
+    r = run_arkiv("fix", str(f))
+    assert r.returncode == 0, r.stderr
+    assert not f.read_text(encoding="utf-8").startswith(BOM)

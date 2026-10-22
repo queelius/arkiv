@@ -1,6 +1,7 @@
 """arkiv CLI."""
 
 import argparse
+import codecs
 import json
 import sys
 from pathlib import Path
@@ -390,7 +391,8 @@ def cmd_detect(args):
     collisions = set()
     warnings = []
 
-    with open(input_path, encoding="utf-8") as f:
+    # utf-8-sig: a leading byte order mark is not part of the first record.
+    with open(input_path, encoding="utf-8-sig") as f:
         for lineno, line in enumerate(f, 1):
             line = line.strip()
             if not line:
@@ -501,7 +503,11 @@ def cmd_fix(args):
     _require_jsonl(input_path, "info")
     fix_map = {"url": "uri", "link": "uri", "href": "uri"}
 
-    lines = input_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    raw = input_path.read_bytes()
+    # A leading byte order mark is not part of the first record; keep it in
+    # the rewritten file, which is otherwise changed only where fixed.
+    encoding = "utf-8-sig" if raw.startswith(codecs.BOM_UTF8) else "utf-8"
+    lines = raw.decode(encoding).splitlines(keepends=True)
     fixed_count = 0
     out_lines = []
 
@@ -531,7 +537,7 @@ def cmd_fix(args):
         else:
             out_lines.append(line)
 
-    input_path.write_text("".join(out_lines), encoding="utf-8")
+    input_path.write_text("".join(out_lines), encoding=encoding)
     print(json.dumps({"fixed": fixed_count, "file": str(input_path)}, indent=2))
 
 

@@ -614,6 +614,56 @@ class TestUnreadableMembers:
             list(iter_jsonl(out))
 
 
+def _truncated_tar_gz(tmp_path, cut):
+    """A well-formed gzip stream holding a tar cut short at byte *cut*
+    (None: an empty stream)."""
+    out = tmp_path / "t.tar.gz"
+    body = records_to_jsonl({"n": i, "pad": "x" * 50} for i in range(2000))
+    write_bundle(out, {"records.jsonl": body})
+    raw = gzip.decompress(out.read_bytes())
+    out.write_bytes(gzip.compress(b"" if cut is None else raw[:cut]))
+    return out
+
+
+class TestUnreadableArchives:
+    """Opening or scanning an archive that is not one (C7): a ValueError, not
+    BadZipFile or tarfile.ReadError."""
+
+    def test_non_zip_named_zip(self, tmp_path):
+        out = tmp_path / "fake.zip"
+        out.write_bytes(b"not a zip at all")
+        with pytest.raises(ValueError, match="fake.zip"):
+            list(iter_jsonl(out))
+        assert peek_jsonl(out) is None
+
+    @pytest.mark.parametrize("cut", [None, 100, 600, 40_000])
+    def test_truncated_tar(self, tmp_path, cut):
+        out = _truncated_tar_gz(tmp_path, cut)
+        with pytest.raises(ValueError):
+            list(iter_jsonl(out))
+        assert peek_jsonl(out) is None or cut == 40_000
+
+    def test_tar_of_junk(self, tmp_path):
+        out = tmp_path / "junk.tar.gz"
+        out.write_bytes(gzip.compress(b"x" * 1024))
+        with pytest.raises(ValueError, match="junk.tar.gz"):
+            list(iter_jsonl(out))
+
+    @pytest.mark.parametrize("name", ["gone.zip", "gone.tar.gz"])
+    def test_missing_archive_is_still_file_not_found(self, tmp_path, name):
+        with pytest.raises(FileNotFoundError):
+            list(iter_jsonl(tmp_path / name))
+
+    def test_reader_errors_are_not_masked(self, tmp_path):
+        # An error raised by the consumer inside the with-block propagates as
+        # itself: open_member does not wrap the yield.
+        out = tmp_path / "ok.tar.gz"
+        write_bundle(out, {"records.jsonl": b'{"a": 1}\n'})
+        with pytest.raises(OSError, match="consumer"):
+            with bundle.open_member(out, "records.jsonl"):
+                raise OSError("consumer")
+
+
 def _reject_constant(name):
     raise AssertionError(f"non-standard JSON constant {name}")
 

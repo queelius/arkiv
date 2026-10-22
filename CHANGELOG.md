@@ -10,8 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 A hardening release from the 2026-10-21 full review
 (`docs/reviews/2026-10-21-full-review.md`): untrusted bundles and archives
 can no longer read or write outside themselves or exhaust memory,
-`arkiv convert` no longer destroys records, and malformed input reports a
-clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
+`arkiv convert` no longer destroys records, and malformed archives,
+bundles, and JSONL files report a clean error instead of a traceback
+(for crafted databases, only colliding asset rows are covered so far;
+see Known issues). No on-disk structure changes; `arkiv_format` stays
+`"0.2"`.
 
 ### Security
 
@@ -64,14 +67,19 @@ clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
   it; a full db-to-directory export records the directory and resets the
   unexported-writes counter.
 - C5: a UTF-8 byte order mark no longer drops the first record of a
-  JSONL file, in `parse_jsonl` and in the bundle readers.
+  JSONL file, in `parse_jsonl`, in the bundle readers, and in
+  `arkiv detect` and `arkiv fix` (which keeps the mark when it rewrites
+  the file).
 - C6: zip packing no longer fails on a member of 2 GiB or more
-  (`force_zip64`), and `write_bundle` writes atomically, so a failure
-  leaves no partial bundle behind.
-- C7: corrupt, truncated, or encrypted bundles report a clean
-  `ValueError` instead of a traceback (`zlib.error`,
-  `NotImplementedError`, `RuntimeError`, `EOFError`), and `peek_jsonl`
-  returns `None` as documented.
+  (`pack_bundle` declares each member's size up front so zipfile switches
+  to zip64 for members over 2 GiB), and `write_bundle` and `pack_bundle`
+  write atomically, so a failure leaves no partial bundle behind.
+- C7: corrupt, truncated, or encrypted bundles, and files that are not
+  the archive their extension claims (a non-zip named `.zip`), report a
+  clean `ValueError` instead of a traceback (`zlib.error`,
+  `NotImplementedError`, `RuntimeError`, `EOFError`, `BadZipFile`,
+  `tarfile.ReadError`), in `unpack_bundle` and in `open_member` and
+  `iter_jsonl`, and `peek_jsonl` returns `None` as documented.
 - C11: `write_bundle` refuses member names that collide after
   normalization (`a/b`, `a//b`, `./a/b`) instead of writing duplicates.
 - C12: `records_to_jsonl` and `Record.to_json` write non-finite floats as
@@ -133,8 +141,27 @@ clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
   `description` or `type` that is not a string, a `count` or
   `record_count` that is not an integer, a `values` that is not a list.
 - A `README.md` or `schema.yaml` that is a directory is ignored.
+- A directory holding only empty `.jsonl` files now converts to 0
+  records (0.4.0 errored).
+- A bundle with no README and no JSONL now errors (0.4.0 produced an
+  empty database).
+- In a directory with no README, symlinked root `*.jsonl` files are now
+  skipped (0.4.0 imported them via glob).
+- `write_bundle` writes normalized member names (`./a` becomes `a`).
+- `get_schema` now gives `values: []` plus `example` for a
+  high-cardinality key, which used to return `values: [example]`.
 - Test coverage now measures the CLI subprocesses (`coverage>=7.10` in
   the dev extra).
+
+### Known issues
+
+- Enumerated `values` discovered by one export are treated as curated on
+  the next import, so they do not update when the data gains new values;
+  a curated marker in `schema.yaml` is planned for 0.5.0.
+- A crafted database can still make export end in a traceback (a
+  non-list `contents` or non-string `contents[].path` in its stored
+  README, a BLOB `readme_body` or record `content`); these are handled in
+  the 0.5.0 export split. Colliding asset rows are already a clean error.
 
 ## [0.4.0] - 2026-10-18
 

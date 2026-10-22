@@ -173,14 +173,19 @@ where noted):
   `_MAX_TAR_HEADER_BYTES` (1 MiB) is refused before it is read, and
   extended headers (GNU long name, pax) are charged per member across the
   chain (`_HeaderBudget`, at most `_MAX_TAR_HEADER_CHAIN` = 8 deep).
-- Corrupt, truncated, or unreadable bundles surface as `ValueError`
-  (`_extract_errors()`, `_ZIP_UNREADABLE_ERRORS`); a missing bundle stays
-  `FileNotFoundError`. `peek_jsonl` returns `None` for any such input.
+- Corrupt, truncated, or unreadable bundles, and files that are not the
+  archive their extension claims, surface as `ValueError`
+  (`_extract_errors()`, `_ZIP_UNREADABLE_ERRORS`), on unpack and in
+  `open_member` (which wraps the archive open and member scan, never its
+  `yield`); a missing bundle stays `FileNotFoundError`. `peek_jsonl`
+  returns `None` for any such input.
 - `write_bundle` refuses the names unpack would refuse and names that
   collide after normalization, and writes atomically (`_atomic_output`), so
-  a failed write leaves no partial bundle; zip uses `force_zip64`, so
-  members of 2 GiB or more pack. Output stays byte-reproducible.
-- JSONL readers accept a leading UTF-8 BOM.
+  a failed write leaves no partial bundle. `pack_bundle` declares each
+  member's size up front so zipfile switches to zip64 for members over
+  2 GiB. Output stays byte-reproducible.
+- JSONL readers (and `arkiv detect` / `arkiv fix`) accept a leading
+  UTF-8 BOM.
 
 `arkiv query` and `arkiv mcp` deliberately do NOT auto-extract
 bundles. They reject bundle input with a helpful error directing the

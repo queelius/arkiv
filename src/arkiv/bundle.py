@@ -71,13 +71,15 @@ _MAX_LINE_CHARS = 64 * 1024**2  # one record
 
 # What the stdlib raises while *reading the data* of a corrupt or truncated
 # compressed member (a bad deflate or gzip stream, a short stream, a failed
-# zip CRC). The one list the streaming path (_BoundedReader) and the
-# extraction path (_ARCHIVE_ERRORS) both draw from, so they cannot drift.
+# zip CRC, a tar member cut short). The one list the streaming path
+# (_BoundedReader) and the extraction path (_ARCHIVE_ERRORS) both draw from,
+# so they cannot drift.
 _CORRUPT_DATA_ERRORS = (
     zlib.error,
     EOFError,
     gzip.BadGzipFile,
     zipfile.BadZipFile,
+    tarfile.ReadError,
 )
 # Everything a corrupt, truncated, or unextractable archive raises.
 _ARCHIVE_ERRORS = (OSError, tarfile.TarError) + _CORRUPT_DATA_ERRORS
@@ -467,41 +469,61 @@ def open_member(
         with open(target, "rb") as raw, _text(raw, max_bytes) as f:
             yield f
         return
+    # Opening the archive and finding the member are wrapped so a file that
+    # is not the archive it claims to be (or is cut short) is a ValueError.
+    # The yield is not: errors raised by the caller's own code pass through.
+    bundle = Path(path)
     if fmt == "zip":
-        with zipfile.ZipFile(path) as zf:
-            try:
-                info = zf.getinfo(_check_member_name(member))
-            except KeyError:
-                raise FileNotFoundError(f"{member!r} not in {path!s}") from None
-            if info.file_size > max_bytes:
-                raise ValueError(f"{member!r} in {path!s} exceeds the size limit")
-            with _zip_member_errors(zf):
-                raw = zf.open(info)
+        with _extract_errors(bundle, "read"):
+            zf = zipfile.ZipFile(path)
+        with zf:
+            with _extract_errors(bundle, "read"):
+                try:
+                    info = zf.getinfo(_check_member_name(member))
+                except KeyError:
+                    raise FileNotFoundError(f"{member!r} not in {path!s}") from None
+                if info.file_size > max_bytes:
+                    raise ValueError(f"{member!r} in {path!s} exceeds the size limit")
+                with _zip_member_errors(zf):
+                    raw = zf.open(info)
             with raw, _text(raw, max_bytes) as f:
                 yield f
         return
-    # Stream the tar instead of tf.getmember(), which parses every header in
-    # the archive before returning (unbounded for a crafted tar of millions
-    # of tiny entries). The scan stops at the first match, counts entries,
-    # and reads through a bounded stream, so headers and skipped members
-    # alike are charged against max_bytes.
     wanted = _check_member_name(member)
     with open(path, "rb") as raw, gzip.GzipFile(fileobj=raw) as gz:
         bounded = io.BufferedReader(_BoundedReader(gz, max_bytes))
-        with tarfile.open(fileobj=bounded, mode="r|", tarinfo=_CappedTarInfo) as tf:
-            for count, tinfo in enumerate(tf, 1):
-                if count > _MAX_BUNDLE_ENTRIES:
-                    raise ValueError(f"{path!s} has too many entries; possible tar bomb")
-                if _member_key(tinfo.name) != wanted:
-                    continue
-                raw_tar = tf.extractfile(tinfo) if tinfo.isfile() else None
-                if raw_tar is None:
-                    raise FileNotFoundError(f"{member!r} in {path!s} is not a regular file")
-                if tinfo.size > max_bytes:
-                    raise ValueError(f"{member!r} in {path!s} exceeds the size limit")
-                with raw_tar, _text(raw_tar, max_bytes) as f:
-                    yield f
-                return
+        with _extract_errors(bundle, "read"):
+            tf = tarfile.open(fileobj=bounded, mode="r|", tarinfo=_CappedTarInfo)
+        with tf:
+            with _extract_errors(bundle, "read"):
+                raw_tar = _find_tar_member(tf, wanted, member, path, max_bytes)
+            with raw_tar, _text(raw_tar, max_bytes) as f:
+                yield f
+
+
+def _find_tar_member(
+    tf: tarfile.TarFile, wanted: str, member: str, path: PathLike, max_bytes: int
+) -> IO[bytes]:
+    """The data of the first tar member named *wanted*, from a streaming
+    TarFile.
+
+    Streams the tar instead of tf.getmember(), which parses every header in
+    the archive before returning (unbounded for a crafted tar of millions of
+    tiny entries). The scan stops at the first match, counts entries, and
+    reads through a bounded stream, so headers and skipped members alike are
+    charged against max_bytes.
+    """
+    for count, tinfo in enumerate(tf, 1):
+        if count > _MAX_BUNDLE_ENTRIES:
+            raise ValueError(f"{path!s} has too many entries; possible tar bomb")
+        if _member_key(tinfo.name) != wanted:
+            continue
+        raw_tar = tf.extractfile(tinfo) if tinfo.isfile() else None
+        if raw_tar is None:
+            raise FileNotFoundError(f"{member!r} in {path!s} is not a regular file")
+        if tinfo.size > max_bytes:
+            raise ValueError(f"{member!r} in {path!s} exceeds the size limit")
+        return raw_tar
     raise FileNotFoundError(f"{member!r} not in {path!s}")
 
 
@@ -641,17 +663,18 @@ def unpack_bundle(
 
 
 @contextmanager
-def _extract_errors(bundle: Path) -> Iterator[None]:
-    """Report a failure to open or extract *bundle* (corrupt or truncated
-    data, a name too long for the filesystem, a full disk) as a ValueError,
-    which the CLI prints as an error rather than a traceback. A missing
-    bundle stays a FileNotFoundError."""
+def _extract_errors(bundle: Path, action: str = "extract") -> Iterator[None]:
+    """Report a failure to open, read, or extract *bundle* (corrupt or
+    truncated data, not an archive at all, a name too long for the
+    filesystem, a full disk) as a ValueError, which the CLI prints as an
+    error rather than a traceback. A missing bundle or member stays a
+    FileNotFoundError."""
     try:
         yield
     except FileNotFoundError:
         raise
     except _ARCHIVE_ERRORS as e:
-        raise ValueError(f"cannot extract {bundle.name}: {e}") from e
+        raise ValueError(f"cannot {action} {bundle.name}: {e}") from e
 
 
 def _check_unique(key: str, seen: Set[str]) -> None:
