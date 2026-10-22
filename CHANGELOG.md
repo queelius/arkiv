@@ -74,6 +74,11 @@ clean error. No on-disk structure changes; `arkiv_format` stays `"0.2"`.
   the strings `"nan"`, `"inf"`, `"-inf"` instead of the non-JSON `NaN`.
 - C13: `pack_bundle` builds tar member names as POSIX paths, so they are
   not backslashed on Windows.
+- On Python 3.8 to 3.10, one query (MCP `sql_query`, `arkiv query`,
+  `Database.query`) no longer leaves the connection denying every later
+  statement, so `get_schema`, `get_manifest`, and `write_record` keep
+  working after it. Several statements in one query are a clean error
+  instead of a `sqlite3.Warning` traceback.
 
 ### Changed
 

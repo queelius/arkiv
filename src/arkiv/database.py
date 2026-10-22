@@ -122,6 +122,11 @@ def _validate_collection_name(name):
         raise ValueError(f"Collection name is OS-reserved: {name!r}")
 
 
+def _allow_all(*_args: Any) -> int:
+    """An authorizer that permits every action: equivalent to having none."""
+    return sqlite3.SQLITE_OK
+
+
 class Database:
     """SQLite query layer over arkiv records."""
 
@@ -467,20 +472,19 @@ class Database:
             raise ValueError("Only SELECT queries are allowed")
 
         timed_out = False
-        if timeout_s is not None:
-            deadline = time.monotonic() + timeout_s
-
-            def _past_deadline() -> int:
-                nonlocal timed_out
-                if time.monotonic() > deadline:
-                    timed_out = True
-                    return 1  # nonzero aborts the statement
-                return 0
-
-            self.conn.set_progress_handler(_past_deadline, self._PROGRESS_INTERVAL)
-
-        self.conn.set_authorizer(self._read_only_authorizer)
         try:
+            if timeout_s is not None:
+                deadline = time.monotonic() + timeout_s
+
+                def _past_deadline() -> int:
+                    nonlocal timed_out
+                    if time.monotonic() > deadline:
+                        timed_out = True
+                        return 1  # nonzero aborts the statement
+                    return 0
+
+                self.conn.set_progress_handler(_past_deadline, self._PROGRESS_INTERVAL)
+            self.conn.set_authorizer(self._read_only_authorizer)
             cursor = self.conn.execute(sql)
 
             if cursor.description is None:
@@ -494,14 +498,18 @@ class Database:
             truncated = len(fetched) > max_rows
             rows = fetched[:max_rows]
             return ([dict(zip(columns, row)) for row in rows], truncated)
-        except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+        except (sqlite3.Error, sqlite3.Warning) as e:
             if timed_out:
                 raise ValueError(
                     f"query exceeded the {timeout_s:g} second time limit"
                 ) from None
             raise ValueError(str(e)) from None
         finally:
-            self.conn.set_authorizer(None)
+            # set_authorizer(None) clears the hook only on Python 3.11+; on
+            # 3.8-3.10 it installs None as the callback and SQLite then denies
+            # every later statement on this connection. Allow-all is
+            # equivalent on every version.
+            self.conn.set_authorizer(_allow_all)
             if timeout_s is not None:
                 self.conn.set_progress_handler(None, 0)
 

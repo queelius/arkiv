@@ -167,6 +167,32 @@ class TestRunSqlCapped:
         srv.close()
 
 
+class TestServerUsableAfterQuery:
+    def test_schema_and_manifest_after_sql_query(self, tmp_path):
+        from arkiv.database import Database
+
+        f = tmp_path / "data.jsonl"
+        f.write_text('{"content": "r", "metadata": {"k": "v"}}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="data")
+        db.close()
+        srv = ArkivServer(db_path=tmp_path / "test.db")
+        assert srv.run_sql_capped("SELECT 1 AS one", max_rows=10)["rows"] == [
+            {"one": 1}
+        ]
+        assert "data" in srv.get_schema()
+        manifest = srv.get_manifest()
+        assert [c["record_count"] for c in manifest["collections"]] == [1]
+        srv.close()
+
+    def test_write_record_after_sql_query(self, tmp_path):
+        srv = ArkivServer(db_path=tmp_path / "w.db", writable=True)
+        srv.run_sql_capped("SELECT 1", max_rows=10)
+        out = srv.write_record("notes", "hello")
+        srv.close()
+        assert "id" in out, out
+
+
 class TestWriteRecordMethod:
     """ArkivServer.write_record holds the MCP write tool's logic (so the
     error paths are testable). Returns a result dict or {'error': ...}."""

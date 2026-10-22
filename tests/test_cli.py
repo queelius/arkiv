@@ -1049,3 +1049,14 @@ def test_convert_tolerates_wrongly_typed_fields(tmp_path):
     finally:
         db.close()
     assert len(rows) == 1
+
+
+def test_query_multiple_statements_is_a_clean_error(tmp_path):
+    f = tmp_path / "c.jsonl"
+    f.write_text('{"content": "x"}\n')
+    r = run_arkiv("convert", str(f), str(tmp_path / "x.db"))
+    assert r.returncode == 0, r.stderr
+    r = run_arkiv("query", str(tmp_path / "x.db"), "SELECT 1; SELECT 2")
+    assert r.returncode == 1, r.stderr
+    assert "Error:" in r.stderr
+    assert "Traceback" not in r.stderr

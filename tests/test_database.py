@@ -268,6 +268,41 @@ class TestQueryGuard:
         db.close()
 
 
+class TestConnectionUsableAfterQuery:
+    """On Python 3.8-3.10, set_authorizer(None) installs None as the callback
+    instead of clearing it, so every later statement was denied."""
+
+    def _db(self, tmp_path):
+        f = tmp_path / "c.jsonl"
+        f.write_text('{"content": "hello", "metadata": {"k": "v"}}\n')
+        db = Database(tmp_path / "test.db")
+        db.import_jsonl(f, collection="c")
+        return db
+
+    def test_reads_and_writes_work_after_query(self, tmp_path):
+        db = self._db(tmp_path)
+        assert db.query("SELECT 1 AS one") == [{"one": 1}]
+        db.get_readme()
+        assert "k" in db.get_schema("c")["metadata_keys"]
+        db.insert_record("c", "after")
+        assert db.query("SELECT COUNT(*) AS n FROM records") == [{"n": 2}]
+        db.close()
+
+    def test_usable_after_failed_query(self, tmp_path):
+        db = self._db(tmp_path)
+        with pytest.raises(ValueError):
+            db.query("SELECT * FROM no_such_table")
+        db.insert_record("c", "after")
+        assert db.get_schema("c")["record_count"] == 2
+        db.close()
+
+    def test_multiple_statements_are_a_value_error(self, tmp_path):
+        db = self._db(tmp_path)
+        with pytest.raises(ValueError, match="one statement"):
+            db.query("SELECT 1; SELECT 2")
+        db.close()
+
+
 class TestGetSchemaRecordCount:
     """SPEC 3.2: get_schema returns record_count alongside metadata_keys."""
 
