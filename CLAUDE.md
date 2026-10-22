@@ -82,7 +82,7 @@ Key behaviors:
 - `import_directory()` imports a whole archive directory: `README.md` via `import_readme()` when present, else every root-level `*.jsonl` (sorted) plus `media/`; a directory with neither raises `ValueError`.
 - `import_readme()` parses README.md frontmatter, imports each JSONL from `contents` (resolves paths relative to README, so nested `collection/collection.jsonl` paths work), merges curated schema from sibling `schema.yaml`, and slurps the `media/` subtree into `_assets`. Two contents entries that resolve to the same collection name (the bare filename stem) raise a collision error rather than silently overwriting one another via replace semantics. `contents` entries come from untrusted frontmatter: `_resolve_contents_entry()` refuses non-string, absolute, `..`-containing, backslash, and NUL paths and anything that resolves outside the archive (even `..` that stays inside), and `_require_inside()` does the same for `schema.yaml`, nested README files, and the top-level `README.md` itself. `contents` itself must be a list (`_contents_entries()`; null is empty), and a `README.md` or `schema.yaml` that is not a regular file is ignored.
 - `import_assets()` stores `dir/media/**` bytes into `_assets` (replace semantics) by walking `iter_source_files()`, so symlinks and dot-prefixed files are never stored; called by `import_directory()` and `import_readme()`
-- `build_database(source, output, *, fingerprint)` is the one way to produce a database from a directory or `README.md` (used by `cmd_convert` for directory, README, and bundle inputs, and by `_resolve_db` for the auto-db). It calls `refuse_unexported_writes()`, builds into a dot-prefixed temp file beside the output, and `os.replace`s it over the output only on success, so a failed build leaves the previous database untouched and no temp file behind. Nothing from the old database survives (removed collections, README text, schema descriptions are gone). The result keeps the replaced file's mode (a new file follows the umask), and a symlinked output has its target replaced and the link kept.
+- `build_database(source, output, *, fingerprint)` is the one way to produce a database from a directory or `README.md` (used by `cmd_convert` for directory, README, and bundle inputs, and by `_resolve_db` for the auto-db). It calls `refuse_unexported_writes()`, then builds through `bundle._atomic_replace()` (into a dot-prefixed temp file beside the output, `os.replace`d over it only on success), so a failed build leaves the previous database untouched and no temp file behind. Nothing from the old database survives (removed collections, README text, schema descriptions are gone). The result keeps the replaced file's mode (a new file follows the umask), and a symlinked output has its target replaced and the link kept.
 - `refuse_unexported_writes(db_path)` is the guard: it raises `ValueError` naming the export command when the database holds writes made by `insert_record()` since the last export, and also refuses an existing SQLite file with no `records` table (not an arkiv database). A missing or zero-byte file, or a database from an older arkiv without the counter, counts as zero writes. A full db-to-directory export (no `--since`/`--until`, not a bundle) calls `store_source_fingerprint()` on the output directory, which clears the counter; if the source database is read-only, the export still succeeds and prints a warning that the guard stays set.
 - Read-only open builds the URI with `Path.as_uri()` (percent-encoded), so a path with `#`, `?`, `%`, spaces, or non-ASCII characters opens the file it names.
 - `insert_record()` is the append-only write path used by the MCP `write_record` tool. By design, it does NOT update the `_schema` table; the pre-computed schema reflects the state at last `arkiv convert`.
@@ -180,8 +180,15 @@ where noted):
   `yield`); a missing bundle stays `FileNotFoundError`. `peek_jsonl`
   returns `None` for any such input.
 - `write_bundle` refuses the names unpack would refuse and names that
-  collide after normalization, and writes atomically (`_atomic_output`), so
-  a failed write leaves no partial bundle. `pack_bundle` declares each
+  collide after normalization, and writes atomically, so a failed write
+  leaves no partial bundle. `_atomic_replace(output, suffix)` is the one
+  replace policy for databases (`build_database`) and bundles
+  (`write_bundle`, `pack_bundle`): it replaces a symlink's target and keeps
+  the link, requires the target's directory to exist, writes a private
+  `mkstemp` temp named `.arkiv-*<suffix>` (short, so it fits NAME_MAX, and
+  dot-prefixed, so source walks skip it), then keeps the replaced file's
+  mode or, for a new file, the mode `_new_file_mode()` measures with an
+  empty probe file (the umask is never set to be read). `pack_bundle` declares each
   member's size up front so zipfile switches to zip64 for members over
   2 GiB. Output stays byte-reproducible.
 - JSONL readers (and `arkiv detect` / `arkiv fix`) accept a leading

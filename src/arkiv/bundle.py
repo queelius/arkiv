@@ -28,7 +28,9 @@ import json
 import os
 import secrets
 import shutil
+import stat
 import tarfile
+import tempfile
 import unicodedata
 import zipfile
 import zlib
@@ -353,20 +355,65 @@ def _open_tar_gz_for_write(output: Path) -> Iterator[tarfile.TarFile]:
                 yield tf
 
 
+def _new_file_mode(directory: Path) -> int:
+    """The permission bits a new file created in *directory* gets: 0o666
+    less the umask (and as a default ACL there shapes it), which is what
+    open() or sqlite would give the output.
+
+    Measured with an empty probe file instead of read with os.umask(),
+    which can only read the umask by setting it: a process-wide change that
+    races with files other threads create meanwhile. Python 3.8 has no
+    os.getumask, and /proc/self/status is Linux-only; the probe works on
+    Linux, macOS, and Windows alike.
+    """
+    while True:
+        probe = directory / f".arkiv-{secrets.token_hex(4)}.mode"
+        try:
+            fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        try:
+            return stat.S_IMODE(os.fstat(fd).st_mode)
+        finally:
+            os.close(fd)
+            os.unlink(probe)
+
+
 @contextmanager
-def _atomic_output(path: Path) -> Iterator[Path]:
-    """Yield a temporary file beside *path* to write to; on success it
-    replaces *path* in one step, and on any exception it is removed, so a
-    failed write never leaves a partial bundle (nor damages an existing
-    one). The temp name never reaches the archive bytes."""
-    tmp = path.parent / f".{path.name}.{secrets.token_hex(4)}.tmp"
+def _atomic_replace(output: Path, suffix: str = "") -> Iterator[Path]:
+    """Yield a temporary file to write in place of *output*. On success it
+    replaces *output* in one step; on any exception it is removed, so a
+    failed write never leaves a partial file nor damages an existing one.
+
+    The one replace policy for every arkiv output (databases and bundles):
+
+    - a symlinked *output* has its target replaced and the link kept;
+    - the target's directory must exist (``FileNotFoundError``);
+    - the temp is ``.arkiv-<random><suffix>`` beside the target: short, so
+      it fits NAME_MAX whatever the output is called, and dot-prefixed, so
+      no source walk or fingerprint sees it. Its name never reaches the
+      bytes written;
+    - the temp is private (0o600) while it is written, and the result
+      keeps the mode of the file it replaces, or, for a new file, gets the
+      mode a new file in that directory gets (:func:`_new_file_mode`).
+    """
+    target = output.resolve() if output.is_symlink() else output
+    if not target.parent.is_dir():
+        raise FileNotFoundError(f"Output directory does not exist: {target.parent}")
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".arkiv-", suffix=suffix)
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
         yield tmp
-        os.replace(tmp, path)
+        if target.exists():
+            shutil.copymode(target, tmp)
+        else:
+            os.chmod(tmp, _new_file_mode(target.parent))
+        os.replace(tmp, target)
     except BaseException:
         try:
             tmp.unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
         raise
 
@@ -413,7 +460,7 @@ def write_bundle(path: PathLike, members: Mapping[str, bytes]) -> None:
             dest.write_bytes(data)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _atomic_output(path) as tmp:
+    with _atomic_replace(path, "." + fmt) as tmp:
         if fmt == "zip":
             with zipfile.ZipFile(tmp, "w") as zf:
                 for name, data in named:
@@ -608,7 +655,7 @@ def pack_bundle(directory: PathLike, output: PathLike) -> None:
         for rel, p in iter_source_files(directory):
             yield p, rel
 
-    with _atomic_output(output) as tmp:
+    with _atomic_replace(output, "." + fmt) as tmp:
         if fmt == "zip":
             with zipfile.ZipFile(tmp, "w") as zf:
                 for p, arcname in _members():

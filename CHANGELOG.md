@@ -113,7 +113,13 @@ see Known issues). No on-disk structure changes; `arkiv_format` stays
 - `arkiv convert` refuses to replace an existing SQLite file that is not
   an arkiv database (no `records` table).
 - A rebuilt database keeps the mode of the file it replaces; a new one
-  follows the umask; a symlinked `arkiv.db` stays a symlink.
+  follows the umask; a symlinked `arkiv.db` stays a symlink. Bundles
+  written by `write_bundle` and `pack_bundle` follow the same policy (one
+  shared helper): a replaced bundle keeps its mode, a symlinked bundle
+  has its target replaced, a missing output directory is a clean error,
+  and the temp file is a short `.arkiv-*` name, so a long output name no
+  longer overflows the filesystem's name limit. The umask is no longer
+  read by setting it.
 - `arkiv query` (and `mcp`) on a directory with no README and no JSONL
   now errors, as `arkiv convert` already did.
 - Wrongly typed known fields move into `metadata` under their own name

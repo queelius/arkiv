@@ -1267,3 +1267,14 @@ def test_fix_does_not_add_a_bom(tmp_path):
     r = run_arkiv("fix", str(f))
     assert r.returncode == 0, r.stderr
     assert not f.read_text(encoding="utf-8").startswith(BOM)
+
+
+@pytest.mark.parametrize("ext", [".zip", ".tar.gz"])
+def test_convert_to_bundle_in_missing_directory_errors(tmp_path, ext):
+    archive = _simple_archive(tmp_path / "archive")
+    assert run_arkiv("convert", str(archive)).returncode == 0
+    missing = tmp_path / "nope"
+    r = run_arkiv("convert", str(archive / "arkiv.db"), str(missing / f"b{ext}"))
+    assert r.returncode == 1
+    assert f"Output directory does not exist: {missing}" in r.stderr
+    assert ".arkiv-" not in r.stderr and "Traceback" not in r.stderr

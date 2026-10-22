@@ -2,17 +2,14 @@
 
 import hashlib
 import json
-import os
-import shutil
 import sqlite3
-import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-from .bundle import _within, iter_source_files
+from .bundle import _atomic_replace, _within, iter_source_files
 from .record import Record, normalize_timestamp, parse_jsonl
 from .schema import (
     SchemaEntry,
@@ -1056,13 +1053,6 @@ class Database:
         self.conn.close()
 
 
-def _current_umask() -> int:
-    """The process umask (it can only be read by setting it, so restore it)."""
-    mask = os.umask(0)
-    os.umask(mask)
-    return mask
-
-
 def refuse_unexported_writes(db_path: Union[str, Path]) -> None:
     """Refuse to replace a database that holds unexported writes.
 
@@ -1120,21 +1110,16 @@ def build_database(
     directory's fingerprint so ``arkiv status`` can detect later drift.
     The result keeps the mode of the database it replaces; a new database
     follows the umask, as sqlite itself would create it. When ``output`` is
-    a symlink, its target is replaced and the link is left in place.
+    a symlink, its target is replaced and the link is left in place. The
+    temp and replace step is :func:`arkiv.bundle._atomic_replace`, the
+    policy bundle writes share.
 
     Returns the number of records imported.
     """
     source = Path(source)
     output = Path(output)
     refuse_unexported_writes(output)
-    if output.is_symlink():
-        output = output.resolve()
-    if not output.parent.is_dir():
-        raise FileNotFoundError(f"Output directory does not exist: {output.parent}")
-    fd, tmp_name = tempfile.mkstemp(dir=output.parent, prefix=".arkiv-", suffix=".db")
-    os.close(fd)
-    tmp = Path(tmp_name)
-    try:
+    with _atomic_replace(output, ".db") as tmp:
         db = Database(tmp)
         try:
             if source.is_dir():
@@ -1147,15 +1132,4 @@ def build_database(
                 db.store_source_fingerprint(directory)
         finally:
             db.close()
-        if output.exists():
-            shutil.copymode(output, tmp)
-        else:
-            os.chmod(tmp, 0o666 & ~_current_umask())
-        os.replace(tmp, output)
-    except BaseException:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
     return count

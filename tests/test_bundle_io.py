@@ -7,6 +7,8 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import os
+import stat
 import tarfile
 import time
 import tracemalloc
@@ -698,7 +700,7 @@ class TestAtomicAndZip64Packing:
         with pytest.raises(OSError):
             pack_bundle(_archive(tmp_path), out)
         assert not out.exists()
-        assert not list(tmp_path.glob(".out*"))
+        assert not list(tmp_path.glob(".arkiv-*"))
 
     @pytest.mark.parametrize("ext", [".zip", ".tar.gz"])
     def test_failed_write_keeps_the_previous_bundle(self, tmp_path, ext):
@@ -713,7 +715,7 @@ class TestAtomicAndZip64Packing:
         with pytest.raises(Exception):
             write_bundle(out, {"a.txt": b"new", "b.txt": Unwritable()})  # type: ignore
         assert out.read_bytes() == before
-        assert not list(tmp_path.glob(".out*"))
+        assert not list(tmp_path.glob(".arkiv-*"))
 
     @pytest.mark.parametrize("ext", [".zip", ".tar.gz"])
     def test_temp_name_does_not_leak_into_the_archive(self, tmp_path, ext):
@@ -725,18 +727,108 @@ class TestAtomicAndZip64Packing:
         assert b".tmp" not in a.read_bytes()
         assert not any(p.name.startswith(".") for p in tmp_path.iterdir())
 
-    def test_atomic_output_replaces_on_success_and_cleans_on_error(self, tmp_path):
+    def test_atomic_replace_replaces_on_success_and_cleans_on_error(self, tmp_path):
         target = tmp_path / "t.bin"
-        with bundle._atomic_output(target) as tmp:
-            assert tmp.parent == tmp_path and tmp.name.startswith(".t.bin.")
+        with bundle._atomic_replace(target, ".bin") as tmp:
+            assert tmp.parent == tmp_path and tmp.name.startswith(".arkiv-")
             tmp.write_bytes(b"ok")
         assert target.read_bytes() == b"ok"
         with pytest.raises(RuntimeError):
-            with bundle._atomic_output(target) as tmp:
+            with bundle._atomic_replace(target, ".bin") as tmp:
                 tmp.write_bytes(b"partial")
                 raise RuntimeError("boom")
         assert target.read_bytes() == b"ok"
         assert [p.name for p in tmp_path.iterdir()] == ["t.bin"]
+
+
+def _pack(tmp_path, out):
+    archive = tmp_path / "archive"
+    pack_bundle(archive if archive.is_dir() else _archive(tmp_path), out)
+
+
+def _write(tmp_path, out):
+    write_bundle(out, {"a.txt": b"1"})
+
+
+WRITERS = [_pack, _write]
+EXTS = [".zip", ".tar.gz"]
+
+
+class TestAtomicReplacePolicy:
+    """Bundles are replaced as databases are (one helper, one policy)."""
+
+    @pytest.mark.parametrize("writer", WRITERS)
+    @pytest.mark.parametrize("ext", EXTS)
+    def test_replacing_keeps_the_existing_mode(self, tmp_path, writer, ext):
+        out = tmp_path / f"out{ext}"
+        writer(tmp_path, out)
+        out.chmod(0o640)
+        writer(tmp_path, out)
+        assert stat.S_IMODE(out.stat().st_mode) == 0o640
+
+    @pytest.mark.parametrize("writer", WRITERS)
+    @pytest.mark.parametrize("ext", EXTS)
+    def test_new_bundle_follows_the_umask(self, tmp_path, writer, ext):
+        out = tmp_path / f"out{ext}"
+        old = os.umask(0o027)
+        try:
+            writer(tmp_path, out)
+        finally:
+            os.umask(old)
+        assert stat.S_IMODE(out.stat().st_mode) == 0o640
+
+    @pytest.mark.parametrize("writer", WRITERS)
+    @pytest.mark.parametrize("ext", EXTS)
+    def test_symlinked_output_replaces_target_keeps_link(self, tmp_path, writer, ext):
+        store = tmp_path / "store"
+        store.mkdir()
+        real = store / f"real{ext}"
+        real.write_bytes(b"old")
+        link = tmp_path / f"out{ext}"
+        try:
+            os.symlink(real, link)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform")
+        writer(tmp_path, link)
+        assert link.is_symlink() and os.readlink(link) == str(real)
+        assert real.read_bytes() != b"old"
+        assert bundle_format(link) == bundle_format(real)
+        assert not list(store.glob(".arkiv-*"))
+        assert not list(tmp_path.glob(".arkiv-*"))
+
+    @pytest.mark.parametrize("ext", EXTS)
+    def test_pack_into_missing_directory(self, tmp_path, ext):
+        missing = tmp_path / "nope"
+        with pytest.raises(FileNotFoundError) as exc:
+            pack_bundle(_archive(tmp_path), missing / f"out{ext}")
+        assert str(exc.value) == f"Output directory does not exist: {missing}"
+
+    @pytest.mark.parametrize("ext", EXTS)
+    def test_write_through_link_into_missing_directory(self, tmp_path, ext):
+        # write_bundle creates the parents of the path it is given, but not
+        # those of a symlink's target.
+        missing = tmp_path / "nope"
+        link = tmp_path / f"out{ext}"
+        try:
+            os.symlink(missing / f"real{ext}", link)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform")
+        with pytest.raises(FileNotFoundError, match="Output directory does not"):
+            write_bundle(link, {"a.txt": b"1"})
+
+    @pytest.mark.parametrize("ext", EXTS)
+    def test_write_creates_missing_parents(self, tmp_path, ext):
+        out = tmp_path / "a" / "b" / f"out{ext}"
+        write_bundle(out, {"a.txt": b"1"})
+        assert out.is_file()
+
+    @pytest.mark.parametrize("writer", WRITERS)
+    @pytest.mark.parametrize("ext", EXTS)
+    def test_longest_output_name_fits(self, tmp_path, writer, ext):
+        # The temp name must not grow with the output name (NAME_MAX 255).
+        out = tmp_path / ("x" * (255 - len(ext)) + ext)
+        writer(tmp_path, out)
+        assert out.is_file()
 
 
 class TestWriteBundleNames:
